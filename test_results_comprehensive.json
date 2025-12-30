@@ -1,0 +1,29 @@
+[
+  {
+    "name": "Simple Web Page",
+    "success": true,
+    "has_data": false,
+    "duration": 97.71263289451599,
+    "confidence": 0.0,
+    "error_count": 2,
+    "warning_count": 1
+  },
+  {
+    "name": "Public PDF Document",
+    "success": false,
+    "has_data": false,
+    "duration": 11.96744704246521,
+    "confidence": 0.0,
+    "error_count": 1,
+    "warning_count": 0
+  },
+  {
+    "name": "API Documentation",
+    "success": false,
+    "has_data": false,
+    "duration": 0.5347676277160645,
+    "confidence": 0.0,
+    "error_count": 1,
+    "warning_count": 0
+  }
+]

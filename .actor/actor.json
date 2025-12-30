@@ -1,0 +1,27 @@
+{
+    "actorSpecification": 1,
+    "name": "docuflow-headless",
+    "title": "DocuFlow: Universal Extraction API (Agency Grade)",
+    "description": "Extract structured JSON from PDFs, Images, and Websites. Features self-healing schema validation. Optimized for n8n/Make.",
+    "version": "1.0.0",
+    "dockerfile": "./.actor/Dockerfile",
+    "input": "./.actor/input_schema.json",
+    "storages": {
+        "dataset": {
+            "actorSpecification": 1,
+            "title": "Extracted Data",
+            "description": "Final validated JSON output with confidence scores and validation results."
+        }
+    },
+    "meta": {
+        "category": "DATA_EXTRACTION",
+        "keywords": ["pdf", "ocr", "web-scraping", "data-extraction", "ai", "llm", "n8n", "make"],
+        "author": {
+            "name": "DocuFlow AI",
+            "email": "support@docuflow.ai"
+        },
+        "isPublic": true,
+        "gitRepoUrl": "https://github.com/docuflow/docuflow-headless",
+        "readme": "README.md"
+    }
+}
