@@ -247,7 +247,8 @@ class ExtractionWorkflow:
             return {
                 "errors": [f"Extraction failed: {str(e)}"],
                 "status": "failed",
-                "retries": state.get("retries", 0) + 1
+                "retries": state.get("retries", 0) + 1,
+                "extraction_result": None  # Clear failed extraction
             }
 
     async def validate_node(self, state: AgentState) -> Dict[str, Any]:
@@ -289,7 +290,8 @@ class ExtractionWorkflow:
             return {
                 "errors": [f"Validation failed: {str(e)}"],
                 "status": "failed",
-                "retries": state.get("retries", 0) + 1
+                "retries": state.get("retries", 0) + 1,
+                "validation_result": None  # Clear failed validation
             }
 
     async def retry_gpu_ocr_node(self, state: AgentState) -> Dict[str, Any]:
@@ -412,7 +414,8 @@ class ExtractionWorkflow:
             return {
                 "errors": [f"Finalization failed: {str(e)}"],
                 "status": "failed",
-                "retries": state.get("retries", 0) + 1
+                "retries": state.get("retries", 0) + 1,
+                "final_data": None  # Clear failed finalization
             }
 
     async def error_handler_node(self, state: AgentState) -> Dict[str, Any]:

@@ -45,14 +45,14 @@ class LLMExtractor:
                 self.llm = ChatOpenAI(
                     base_url=f"{ollama_host}/v1",
                     api_key="ollama",  # Ollama doesn't need real API key
-                    model="granite4:3b",  # Use faster model
+                    model="ministral-3:3b",  # Use faster model - ministral is optimized for speed
                     temperature=0.0,  # Zero creativity for deterministic output
-                    max_tokens=1024,  # Further reduce tokens for faster response
-                    timeout=10,  # Further reduce timeout for faster models
-                    max_retries=1,  # Reduce retries
+                    max_tokens=256,  # Reduce tokens for faster response
+                    timeout=15,  # Increase timeout for reliability
+                    max_retries=2,  # Allow some retries
                     model_kwargs={
                         "top_p": 0.1,  # Low top_p for deterministic output
-                        "presence_penalty": 0.1,  # Reduce repetition (correct parameter name)
+                        "num_predict": 128,  # Limit prediction length for speed
                     }
                 )
                 logger.info("Ollama LLM initialized (dev mode)", model="granite4:3b", host=ollama_host)
@@ -209,7 +209,7 @@ Return format:
             # First, analyze if GPU OCR is needed (limit content for faster analysis)
             analysis_prompt = self.create_document_analysis_prompt()
             analysis_response = await self.llm.ainvoke(
-                analysis_prompt.format_messages(content=content[:5000])  # Reduce content size for faster analysis
+                analysis_prompt.format_messages(content=content[:2000])  # Reduce content size for faster analysis
             )
             
             try:
@@ -231,7 +231,7 @@ Return format:
             
             # Format the prompt with content and schema (further limit content)
             formatted_prompt = prompt.format_messages(
-                content=content[:10000],  # Further limit content size for faster processing
+                content=content[:4000],  # Further limit content size for faster processing
                 schema=json.dumps(target_schema, indent=2)
             )
             

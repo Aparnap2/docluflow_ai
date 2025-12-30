@@ -175,7 +175,7 @@ class OCRProcessor:
             
             # Use Ollama for DeepSeek OCR processing (for images only)
             ollama_endpoint = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
-            deepseek_model = "deepseek-ocr:3b"  # Use the 3B model we have available
+            deepseek_model = "deepseek-ocr:3b"  # Use DeepSeek OCR model for OCR tasks
             
             # Download file to temporary location
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp_file:
@@ -220,12 +220,12 @@ class OCRProcessor:
                     }
                 }
                 
-                # Call Ollama API
+                # Call Ollama API with optimized timeout
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         f"{ollama_endpoint}/api/generate",
                         json=ocr_request,
-                        timeout=aiohttp.ClientTimeout(total=300)
+                        timeout=aiohttp.ClientTimeout(total=30)  # Reduce timeout for faster response
                     ) as response:
                         if response.status != 200:
                             error_text = await response.text()
