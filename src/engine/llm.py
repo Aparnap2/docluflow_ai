@@ -22,7 +22,7 @@ class ExtractionResult(BaseModel):
 class LLMExtractor:
     """LLM-based structured data extractor using Groq for general extraction and local models for documents."""
     
-    def __init__(self, model_name: str = "ministral-3:3b", dev_mode: bool = False):
+    def __init__(self, model_name: str = "granite4:3b", dev_mode: bool = False):
         """
         Initialize the LLM extractor.
         
@@ -45,13 +45,17 @@ class LLMExtractor:
                 self.llm = ChatOpenAI(
                     base_url=f"{ollama_host}/v1",
                     api_key="ollama",  # Ollama doesn't need real API key
-                    model="ministral-3:3b",
-                    temperature=0.1,
-                    max_tokens=4096,
-                    timeout=30,
-                    max_retries=2,
+                    model="granite4:3b",  # Use faster model
+                    temperature=0.0,  # Zero creativity for deterministic output
+                    max_tokens=1024,  # Further reduce tokens for faster response
+                    timeout=10,  # Further reduce timeout for faster models
+                    max_retries=1,  # Reduce retries
+                    model_kwargs={
+                        "top_p": 0.1,  # Low top_p for deterministic output
+                        "presence_penalty": 0.1,  # Reduce repetition (correct parameter name)
+                    }
                 )
-                logger.info("Ollama LLM initialized (dev mode)", model="ministral-3:3b", host=ollama_host)
+                logger.info("Ollama LLM initialized (dev mode)", model="granite4:3b", host=ollama_host)
             except Exception as e:
                 logger.error("Ollama initialization failed in dev mode", error=str(e))
                 raise ValueError(f"Ollama not available for dev mode: {str(e)}")
@@ -64,10 +68,13 @@ class LLMExtractor:
             self.llm = ChatGroq(
                 model=self.model_name,
                 groq_api_key=groq_api_key,
-                temperature=0.1,  # Low temperature for consistent extraction
-                max_tokens=4096,
-                timeout=30,
-                max_retries=2,
+                temperature=0.0,  # Zero creativity for deterministic output
+                max_tokens=1024,  # Reduce tokens for faster response
+                timeout=15,  # Reduce timeout
+                max_retries=1,  # Reduce retries
+                model_kwargs={
+                    "top_p": 0.1,  # Low top_p for deterministic output
+                }
             )
             logger.info("Groq LLM initialized", model=self.model_name)
 
@@ -199,10 +206,10 @@ Return format:
                     needs_gpu_ocr=False
                 )
             
-            # First, analyze if GPU OCR is needed
+            # First, analyze if GPU OCR is needed (limit content for faster analysis)
             analysis_prompt = self.create_document_analysis_prompt()
             analysis_response = await self.llm.ainvoke(
-                analysis_prompt.format_messages(content=content[:10000])
+                analysis_prompt.format_messages(content=content[:5000])  # Reduce content size for faster analysis
             )
             
             try:
@@ -222,9 +229,9 @@ Return format:
             # Create extraction prompt
             prompt = self.create_extraction_prompt(target_schema)
             
-            # Format the prompt with content and schema
+            # Format the prompt with content and schema (further limit content)
             formatted_prompt = prompt.format_messages(
-                content=content[:50000],  # Limit content size to avoid token limits
+                content=content[:10000],  # Further limit content size for faster processing
                 schema=json.dumps(target_schema, indent=2)
             )
             

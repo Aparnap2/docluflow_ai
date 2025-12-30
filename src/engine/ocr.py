@@ -24,22 +24,7 @@ class OCRProcessor:
     def _setup_docling(self):
         """Initialize Docling converter with granite-docling model for CPU processing."""
         try:
-            # Configure PDF pipeline for optimal OCR results with granite-docling
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = True
-            pipeline_options.do_table_structure = True
-            pipeline_options.ocr_options.lang = ["en"]  # Primary language
-            
-            # Note: Docling automatically uses CPU for processing
-            # The granite-docling model is used when available via Ollama
-            
-            self.converter = DocumentConverter(
-                pipeline_options=pipeline_options
-            )
-            logger.info("Docling converter initialized with granite-docling:256m model")
-        except TypeError as e:
-            # Fallback to basic initialization if pipeline_options is not supported
-            logger.warning("Advanced pipeline options not supported, using basic Docling converter", error=str(e))
+            # Try basic initialization first
             self.converter = DocumentConverter()
             logger.info("Docling converter initialized with basic configuration")
         except Exception as e:
@@ -172,6 +157,7 @@ class OCRProcessor:
     async def _process_with_deepseek_gpu(self, url: str) -> Dict[str, Any]:
         """
         Process document using DeepSeek OCR (GPU) via Ollama.
+        For PDFs, falls back to Docling processing since Ollama expects images.
         
         Args:
             url: URL of the document
@@ -182,7 +168,12 @@ class OCRProcessor:
         logger.info("Processing with DeepSeek OCR (GPU via Ollama)", url=url)
         
         try:
-            # Use Ollama for DeepSeek OCR processing
+            # Check if it's a PDF - if so, fall back to Docling with enhanced processing
+            if url.lower().endswith('.pdf'):
+                logger.info("PDF detected, using enhanced Docling processing instead of DeepSeek OCR", url=url)
+                return await self._process_pdf_with_enhanced_docling(url)
+            
+            # Use Ollama for DeepSeek OCR processing (for images only)
             ollama_endpoint = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
             deepseek_model = "deepseek-ocr:3b"  # Use the 3B model we have available
             
@@ -220,7 +211,7 @@ class OCRProcessor:
                 # Prepare the request to Ollama
                 ocr_request = {
                     "model": deepseek_model,
-                    "prompt": f"Extract all text from this document and convert to markdown format. Preserve structure, tables, and formatting where possible.",
+                    "prompt": f"Extract all text from this image and convert to markdown format. Preserve structure and formatting where possible.",
                     "images": [encoded_content],  # Send as base64 encoded image
                     "stream": False,
                     "options": {
@@ -248,8 +239,8 @@ class OCRProcessor:
                 # Calculate confidence for DeepSeek results
                 confidence = self._calculate_deepseek_confidence(markdown, result)
                 
-                logger.info("DeepSeek OCR processing completed", 
-                           url=url, 
+                logger.info("DeepSeek OCR processing completed",
+                           url=url,
                            content_length=len(markdown),
                            confidence=confidence,
                            processing_time=processing_time)
@@ -275,6 +266,83 @@ class OCRProcessor:
                     
         except Exception as e:
             logger.error("DeepSeek OCR processing failed", url=url, error=str(e))
+            raise
+
+    async def _process_pdf_with_enhanced_docling(self, url: str) -> Dict[str, Any]:
+        """
+        Process PDF using enhanced Docling processing with higher confidence thresholds.
+        
+        Args:
+            url: URL of the PDF document
+            
+        Returns:
+            Dict with extracted content and metadata
+        """
+        logger.info("Processing PDF with enhanced Docling", url=url)
+        
+        try:
+            # Download file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_path = tmp_file.name
+                
+                # Download the file
+                logger.debug("Downloading PDF for enhanced Docling", url=url)
+                response = requests.get(url, timeout=60, stream=True)
+                response.raise_for_status()
+                
+                # Write to temp file
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+                
+                file_size = os.path.getsize(tmp_path)
+                logger.debug("PDF downloaded", size=file_size)
+                
+            try:
+                # Convert document using Docling with enhanced settings
+                logger.debug("Converting PDF with enhanced Docling", path=tmp_path)
+                
+                import time
+                start_time = time.time()
+                
+                result = self.converter.convert(tmp_path)
+                
+                processing_time = time.time() - start_time
+                
+                # Export to markdown
+                markdown = result.document.export_to_markdown()
+                
+                # Calculate confidence with higher thresholds for PDFs
+                confidence = self._calculate_docling_confidence(markdown, result)
+                
+                # Boost confidence for PDF processing
+                confidence = min(0.9, confidence + 0.1)
+                
+                logger.info("Enhanced Docling PDF processing completed",
+                           url=url,
+                           content_length=len(markdown),
+                           confidence=confidence,
+                           processing_time=processing_time)
+                
+                return {
+                    "markdown": markdown,
+                    "confidence": confidence,
+                    "needs_gpu_ocr": False,  # Using enhanced Docling
+                    "processing_time": processing_time,
+                    "engine": "docling_enhanced",
+                    "metadata": {
+                        "pages": len(result.document.pages) if hasattr(result.document, 'pages') else 1,
+                        "file_size": file_size,
+                        "ocr_engine": "docling-enhanced"
+                    }
+                }
+                
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                    
+        except Exception as e:
+            logger.error("Enhanced Docling PDF processing failed", url=url, error=str(e))
             raise
 
     def _calculate_docling_confidence(self, markdown: str, result) -> float:

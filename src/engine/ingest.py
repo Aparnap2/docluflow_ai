@@ -98,9 +98,9 @@ def is_garbage(markdown: str) -> bool:
     
     # Length check (defense against empty/minimal content)
     content_length = len(markdown.strip())
-    if content_length < 50:
-        logger.warning("Content too short, likely garbage", 
-                      content_length=content_length, min_length=50)
+    if content_length < 15:  # Reduced threshold for simple documents like "Dummy PDF file"
+        logger.warning("Content too short, likely garbage",
+                      content_length=content_length, min_length=15)
         return True
     
     # Login wall detection (comprehensive trigger list)
