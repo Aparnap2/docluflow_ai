@@ -22,7 +22,7 @@ class ExtractionResult(BaseModel):
 class LLMExtractor:
     """LLM-based structured data extractor using Groq for general extraction and local models for documents."""
     
-    def __init__(self, model_name: str = "granite4:3b", dev_mode: bool = False):
+    def __init__(self, model_name: str = "ministral-3:3b", dev_mode: bool = False):
         """
         Initialize the LLM extractor.
         
@@ -55,7 +55,7 @@ class LLMExtractor:
                         "num_predict": 128,  # Limit prediction length for speed
                     }
                 )
-                logger.info("Ollama LLM initialized (dev mode)", model="granite4:3b", host=ollama_host)
+                logger.info("Ollama LLM initialized (dev mode)", model="ministral-3:3b", host=ollama_host)
             except Exception as e:
                 logger.error("Ollama initialization failed in dev mode", error=str(e))
                 raise ValueError(f"Ollama not available for dev mode: {str(e)}")

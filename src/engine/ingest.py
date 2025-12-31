@@ -1,9 +1,13 @@
 """Robust input type detection and defense logic for DocuFlow Headless."""
 
 import requests
-from typing import Literal
+import fitz  # PyMuPDF
+import tempfile
+from typing import Literal, List, Dict, Any, Optional
 from urllib.parse import urlparse
 import structlog
+from PIL import Image
+import os
 
 logger = structlog.get_logger(__name__)
 
@@ -172,3 +176,186 @@ def validate_url_accessibility(url: str) -> tuple[bool, str]:
         return False, "Connection failed"
     except Exception as e:
         return False, f"Validation error: {str(e)}"
+
+def compress_pdf(file_path: str) -> str:
+    """Compress PDF using ghostscript if >10MB."""
+    file_size = os.path.getsize(file_path)
+    if file_size <= 10 * 1024 * 1024:  # 10MB
+        return file_path
+    
+    logger.info("Compressing large PDF", original_size=file_size)
+    try:
+        import subprocess
+        compressed_path = file_path.replace('.pdf', '_compressed.pdf')
+        
+        cmd = [
+            'ghostscript', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
+            '-dPDFSETTINGS=/screen', '-dNOPAUSE', '-dQUIET', '-dBATCH',
+            f'-sOutputFile={compressed_path}', file_path
+        ]
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        compressed_size = os.path.getsize(compressed_path)
+        
+        logger.info("PDF compression completed",
+                   original_size=file_size, compressed_size=compressed_size)
+        return compressed_path
+    except Exception as e:
+        logger.warning("PDF compression failed, using original", error=str(e))
+        return file_path
+
+def compress_image(file_path: str) -> str:
+    """Resize image if >5MB or width >2500px."""
+    file_size = os.path.getsize(file_path)
+    if file_size <= 5 * 1024 * 1024:  # 5MB
+        return file_path
+    
+    logger.info("Compressing large image", original_size=file_size)
+    try:
+        with Image.open(file_path) as img:
+            # Resize if width > 2500px
+            if img.width > 2500:
+                ratio = 2500 / img.width
+                new_height = int(img.height * ratio)
+                img = img.resize((2500, new_height), Image.Resampling.LANCZOS)
+            
+            # Save with optimization
+            compressed_path = file_path.replace('.', '_compressed.')
+            img.save(compressed_path, optimize=True, quality=85)
+            
+            compressed_size = os.path.getsize(compressed_path)
+            logger.info("Image compression completed",
+                       original_size=file_size, compressed_size=compressed_size)
+            return compressed_path
+    except Exception as e:
+        logger.warning("Image compression failed, using original", error=str(e))
+        return file_path
+
+def filter_by_keywords(text: str, filter_keywords: List[str]) -> bool:
+    """Check if any filter keyword exists in text (AGB filtering)."""
+    if not filter_keywords:
+        return True
+    
+    text_lower = text.lower()
+    for keyword in filter_keywords:
+        if keyword.lower() in text_lower:
+            logger.info("Filter keyword found", keyword=keyword)
+            return True
+    
+    logger.info("No filter keywords found, skipping file")
+    return False
+
+def extract_pdf_text_first_pages(url: str, max_pages: int = 2) -> Optional[str]:
+    """Extract text from first N pages of PDF using PyMuPDF."""
+    try:
+        # Download PDF to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            response = requests.get(url, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            for chunk in response.iter_content(chunk_size=8192):
+                tmp_file.write(chunk)
+            
+            tmp_path = tmp_file.name
+        
+        try:
+            # Open with PyMuPDF
+            doc = fitz.open(tmp_path)
+            text = ""
+            
+            # Extract text from first max_pages pages
+            for page_num in range(min(max_pages, doc.page_count)):
+                page = doc[page_num]
+                text += page.get_text() + "\n"
+            
+            doc.close()
+            return text.strip()
+            
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                
+    except Exception as e:
+        logger.error("Failed to extract PDF text", url=url, error=str(e))
+        return None
+
+def calculate_text_density(text: str, page_count: int) -> float:
+    """Calculate text density (characters per page)."""
+    if page_count <= 0:
+        return 0.0
+    return len(text) / page_count
+
+def route_processing(text: str, has_text_layer: bool, page_count: int) -> str:
+    """Route to CPU_FAST or GPU_VISION based on text analysis."""
+    if not text:
+        return "GPU_VISION"
+    
+    text_density = calculate_text_density(text, page_count)
+    
+    # If has text layer and reasonable density, use CPU_FAST
+    if has_text_layer and text_density > 50:
+        return "CPU_FAST"
+    
+    return "GPU_VISION"
+
+async def process_file_intelligently(file_info: Dict[str, Any], filter_keywords: List[str]) -> Dict[str, Any]:
+    """Intelligent file processing with filtering and routing."""
+    url = file_info.get("url") or file_info.get("base64")
+    filename = file_info.get("filename", "unknown")
+    
+    if not url:
+        return {"error": "No URL or base64 data provided", "skipped": True}
+    
+    logger.info("Processing file intelligently", filename=filename, url=url[:50])
+    
+    try:
+        # Determine file type
+        file_type = determine_input_type(url)
+        if file_type == "error":
+            return {"error": "Invalid or inaccessible file", "skipped": True}
+        
+        # For PDFs, check first 2 pages for filter keywords
+        if file_type == "pdf":
+            first_pages_text = extract_pdf_text_first_pages(url)
+            if first_pages_text:
+                # AGB filtering
+                if not filter_by_keywords(first_pages_text, filter_keywords):
+                    return {"skipped": True, "reason": "Filter keywords not found"}
+                
+                # Check if has text layer
+                has_text_layer = len(first_pages_text.strip()) > 10
+                
+                # Route processing
+                route = route_processing(first_pages_text, has_text_layer, 2)
+                return {
+                    "url": url,
+                    "filename": filename,
+                    "type": file_type,
+                    "route": route,
+                    "has_text_layer": has_text_layer,
+                    "text_density": calculate_text_density(first_pages_text, 2)
+                }
+        
+        # For images, always use GPU_VISION
+        if file_type == "image":
+            return {
+                "url": url,
+                "filename": filename,
+                "type": file_type,
+                "route": "GPU_VISION"
+            }
+        
+        # For web content, use CPU_FAST
+        if file_type == "web":
+            return {
+                "url": url,
+                "filename": filename,
+                "type": file_type,
+                "route": "CPU_FAST"
+            }
+        
+        return {"error": "Unsupported file type", "skipped": True}
+        
+    except Exception as e:
+        logger.error("Intelligent processing failed", filename=filename, error=str(e))
+        return {"error": str(e), "skipped": True}

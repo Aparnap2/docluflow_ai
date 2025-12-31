@@ -1,13 +1,93 @@
-apify-client>=1.6.0
-langgraph>=0.0.10
-langchain-groq>=0.1.0
-crawl4ai>=0.2.0
-docling>=1.0.0
-pydantic>=2.5.0
-requests>=2.31.0
-nest_asyncio>=1.5.0
-modal>=0.63.0
-python-dotenv>=1.0.0
-aiohttp>=3.9.0
-tenacity>=8.2.0
-structlog>=23.1.0
+### Core Dependencies (Anti-Hallucination Constraints)
+# PDF Processing (PyMuPDF only - NO PyPDF2, NO Unstructured)
+PyMuPDF==1.23.22
+Pillow==10.2.0
+
+# OCR & Document Processing
+docling==0.2.0
+easyocr==1.7.0
+
+# LLM Integration
+langchain==0.1.0
+langchain-groq==0.0.1
+openai==1.10.0
+
+# API & Web
+fastapi==0.109.0
+hono==0.1.0
+httpx==0.26.0
+aiohttp==3.9.1
+
+# Data Validation & Processing
+pydantic==2.5.3
+pandas==2.1.4
+numpy==1.26.3
+
+# Async & Concurrency
+asyncio==3.4.3
+tenacity==8.2.3
+
+# Security & Authentication
+cryptography==41.0.8
+PyJWT==2.8.0
+python-jose==3.3.0
+
+# Rate Limiting & Circuit Breaker
+slowapi==0.1.9
+redis==5.0.1
+redis-async==1.2.1
+
+# Monitoring & Logging
+structlog==23.2.0
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation==0.42b0
+
+# Apify Integration
+apify==1.6.0
+apify-client==1.6.0
+
+# Environment & Configuration
+python-dotenv==1.0.0
+pydantic-settings==2.1.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Development Tools
+black==23.12.1
+isort==5.13.2
+mypy==1.8.0
+flake8==7.0.0
+
+### Security & Enterprise Dependencies
+# Encryption
+fernet==1.0.1
+
+# Rate Limiting Backend
+hiredis==2.3.2
+
+# Monitoring
+sentry-sdk==1.39.2
+
+# HTTP Security
+secure==0.3.0
+
+# Input Validation
+validators==0.22.0
+
+# Performance
+uvloop==0.19.0
+
+### Optional Dependencies (Commented Out - Use Only If Needed)
+# torch==2.1.2  # DO NOT USE - Too heavy for Apify
+# transformers==4.36.2  # DO NOT USE - Too heavy for Apify
+# unstructured==0.11.8  # DO NOT USE - Too slow per requirements
+
+### Development Dependencies (Install with: pip install -r requirements.txt --extra-index-url https://pypi.org/simple/)
+# For local development only
+# jupyter==1.0.0
+# notebook==7.0.7

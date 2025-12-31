@@ -38,6 +38,7 @@ class AgentState(TypedDict):
     # Smart routing
     confidence_threshold: float
     gpu_ocr_attempted: bool
+    route: Optional[str]  # CPU_FAST or GPU_VISION from intelligent ingestion
     
     # Final output
     final_data: Optional[Dict[str, Any]]
@@ -149,16 +150,34 @@ class ExtractionWorkflow:
                 use_proxy = state.get("proxy_configuration", {}).get("useApifyProxy", True)
                 md = await crawl_with_retry(url, use_proxy=use_proxy, process_documents=True)
             else:
-                # Process document (PDF/Image) with hybrid OCR
-                use_gpu_ocr = state.get("use_gpu_ocr", False) or is_ocr_recommended(url, itype)
-                ocr_result = await process_document(url, use_gpu_ocr=use_gpu_ocr)
+                # Process document (PDF/Image) with intelligent routing
+                route = state.get("route")  # From intelligent ingestion
+                use_gpu_ocr = state.get("use_gpu_ocr", False)
+                confidence_threshold = state.get("confidence_threshold", 0.7)
+                
+                # Use intelligent routing if available, otherwise fall back to legacy logic
+                if route:
+                    # Use the route determined by intelligent ingestion
+                    ocr_result = await process_document(
+                        url,
+                        use_gpu_ocr=use_gpu_ocr or route == "GPU_VISION",
+                        route=route,
+                        confidence_threshold=confidence_threshold
+                    )
+                else:
+                    # Legacy fallback logic
+                    use_gpu_ocr = use_gpu_ocr or is_ocr_recommended(url, itype)
+                    ocr_result = await process_document(url, use_gpu_ocr=use_gpu_ocr)
+                
                 md = ocr_result.get("markdown", "")
                 
-                # Log OCR engine used
-                logger.info("Document processed with OCR", 
-                           url=url, 
-                           engine=ocr_result.get("engine", "unknown"),
-                           confidence=ocr_result.get("confidence", 0))
+                # Log processing method used
+                processing_method = route or ocr_result.get("engine", "unknown")
+                logger.info("Document processed with intelligent routing",
+                           url=url,
+                           method=processing_method,
+                           confidence=ocr_result.get("confidence", 0),
+                           route=route)
             
             # 3. Garbage Check (Critical defense against poor content)
             logger.debug("Performing garbage check", content_length=len(md) if md else 0)
@@ -331,10 +350,11 @@ class ExtractionWorkflow:
                 # Check if this is a document that can benefit from GPU OCR
                 input_type = state.get("input_type")
                 if input_type in ["pdf", "image"]:
-                    # Re-process with GPU OCR
+                    # Re-process with GPU OCR using external API
                     ocr_result = await process_document(
-                        state["source_url"], 
+                        state["source_url"],
                         use_gpu_ocr=True,
+                        route="GPU_VISION",  # Force GPU route
                         confidence_threshold=0.0  # Force GPU OCR
                     )
                     
@@ -371,7 +391,7 @@ class ExtractionWorkflow:
             return {"gpu_ocr_attempted": True}
 
     async def finalize_node(self, state: AgentState) -> Dict[str, Any]:
-        """Finalization node that prepares the output."""
+        """Finalization node that prepares the output with v2 metadata."""
         logger.info("Finalizing extraction", url=state["source_url"])
         
         try:
@@ -388,12 +408,23 @@ class ExtractionWorkflow:
             else:
                 final_data = extraction_result.data
             
-            # Build final result
+            # Determine processing method for metadata
+            route = state.get("route")
+            if route:
+                processing_method = route
+            elif state.get("gpu_ocr_attempted", False):
+                processing_method = "GPU_VISION"
+            else:
+                processing_method = "CPU_FAST"
+            
+            # Build final result with v2 metadata
             result = {
                 "final_data": final_data,
                 "extraction_confidence": extraction_result.confidence,
                 "validation_passed": validation_result.is_valid if validation_result else False,
                 "gpu_ocr_used": state.get("gpu_ocr_attempted", False),
+                "route": processing_method,  # v2: processing method used
+                "filename": state.get("filename"),  # v2: original filename
                 "errors": extraction_result.errors + (validation_result.errors if validation_result else []),
                 "warnings": extraction_result.errors + (validation_result.warnings if validation_result else []),
                 "suggestions": validation_result.suggestions if validation_result else [],
@@ -404,7 +435,8 @@ class ExtractionWorkflow:
                        url=state["source_url"],
                        data_keys=list(final_data.keys()) if final_data else [],
                        confidence=extraction_result.confidence,
-                       gpu_ocr_used=state.get("gpu_ocr_attempted", False))
+                       processing_method=processing_method,
+                       filename=state.get("filename"))
             
             return result
             
@@ -483,7 +515,9 @@ class ExtractionWorkflow:
                   use_gpu_ocr: bool = False,
                   proxy_configuration: Optional[Dict[str, Any]] = None,
                   confidence_threshold: float = 0.7,
-                  dev_mode: bool = False) -> Dict[str, Any]:
+                  dev_mode: bool = False,
+                  route: Optional[str] = None,
+                  filename: Optional[str] = None) -> Dict[str, Any]:
         """
         Run the extraction workflow with smart routing.
         
@@ -511,6 +545,8 @@ class ExtractionWorkflow:
             "confidence_threshold": confidence_threshold,
             "dev_mode": dev_mode,
             "gpu_ocr_attempted": False,
+            "route": route,  # Intelligent routing from ingestion
+            "filename": filename,  # Original filename for metadata
             "errors": [],
             "warnings": [],
             "retries": 0,
@@ -548,7 +584,9 @@ async def run_extraction(source_url: str, target_schema: Dict[str, Any],
                         use_gpu_ocr: bool = False,
                         proxy_configuration: Optional[Dict[str, Any]] = None,
                         confidence_threshold: float = 0.7,
-                        dev_mode: bool = False) -> Dict[str, Any]:
+                        dev_mode: bool = False,
+                        route: Optional[str] = None,
+                        filename: Optional[str] = None) -> Dict[str, Any]:
     """
     Run the extraction workflow (convenience function).
     
@@ -573,5 +611,7 @@ async def run_extraction(source_url: str, target_schema: Dict[str, Any],
         use_gpu_ocr=use_gpu_ocr,
         proxy_configuration=proxy_configuration,
         confidence_threshold=confidence_threshold,
-        dev_mode=dev_mode
+        dev_mode=dev_mode,
+        route=route,
+        filename=filename
     )

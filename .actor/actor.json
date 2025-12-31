@@ -1,27 +1,36 @@
 {
     "actorSpecification": 1,
-    "name": "docuflow-headless",
-    "title": "DocuFlow: Universal Extraction API (Agency Grade)",
-    "description": "Extract structured JSON from PDFs, Images, and Websites. Features self-healing schema validation. Optimized for n8n/Make.",
-    "version": "1.0.0",
+    "name": "docuflow-headless-v2",
+    "title": "DocuFlow Headless v2: Hybrid CPU/GPU Document Extraction",
+    "description": "Extract structured JSON from PDFs and Images using Hybrid CPU/GPU architecture. Features intelligent file routing, AGB filtering, and n8n-optimized output. Supports multiple files with keyword filtering.",
+    "version": "2.0.0",
     "dockerfile": "./.actor/Dockerfile",
-    "input": "./.actor/input_schema.json",
+    "input": "./.actor/input_schema_v2.json",
     "storages": {
         "dataset": {
             "actorSpecification": 1,
             "title": "Extracted Data",
-            "description": "Final validated JSON output with confidence scores and validation results."
+            "description": "Final validated JSON output with metadata for n8n/Google Drive routing, confidence scores, and processing method tracking."
         }
     },
     "meta": {
         "category": "DATA_EXTRACTION",
-        "keywords": ["pdf", "ocr", "web-scraping", "data-extraction", "ai", "llm", "n8n", "make"],
+        "keywords": ["pdf", "ocr", "document-extraction", "hybrid-cpu-gpu", "agb-filtering", "n8n", "make", "google-drive", "pymupdf", "docling"],
         "author": {
             "name": "DocuFlow AI",
             "email": "support@docuflow.ai"
         },
         "isPublic": true,
         "gitRepoUrl": "https://github.com/docuflow/docuflow-headless",
-        "readme": "README.md"
+        "readme": "README.md",
+        "features": [
+            "Hybrid CPU/GPU processing",
+            "Multiple file support",
+            "AGB keyword filtering",
+            "Intelligent routing",
+            "File compression",
+            "n8n-optimized output",
+            "Google Drive routing metadata"
+        ]
     }
 }

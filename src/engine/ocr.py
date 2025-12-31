@@ -1,4 +1,4 @@
-"""OCR processing module using Docling with granite-docling:256m (CPU) and DeepSeek-OCR (GPU fallback)."""
+"""OCR processing module using PyMuPDF + Docling (no_ocr mode) for CPU and external API for GPU."""
 
 import os
 import asyncio
@@ -7,31 +7,36 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 import tempfile
 import requests
+import fitz  # PyMuPDF
 from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 import structlog
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = structlog.get_logger(__name__)
 
 class OCRProcessor:
-    """Hybrid OCR processor with CPU (granite-docling) and GPU (deepseek-ocr) capabilities."""
+    """Hybrid OCR processor with CPU (PyMuPDF + Docling no_ocr) and GPU (external API) capabilities."""
     
     def __init__(self):
         self.converter = None
         self._setup_docling()
         
     def _setup_docling(self):
-        """Initialize Docling converter with granite-docling model for CPU processing."""
+        """Initialize Docling converter with no_ocr mode for CPU processing."""
         try:
-            # Try basic initialization first
-            self.converter = DocumentConverter()
-            logger.info("Docling converter initialized with basic configuration")
+            # Configure Docling for layout-only processing (no OCR)
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = False  # Disable OCR, use text layer only
+            pipeline_options.do_table_structure = True
+            
+            self.converter = DocumentConverter(pipeline_options=pipeline_options)
+            logger.info("Docling converter initialized with no_ocr mode")
         except Exception as e:
             logger.error("Failed to initialize Docling converter", error=str(e))
             raise
 
-    async def process_document(self, url: str, use_gpu_ocr: bool = False, confidence_threshold: float = 0.7) -> Dict[str, Any]:
+    async def process_document(self, url: str, use_gpu_ocr: bool = False, confidence_threshold: float = 0.7, route: str = None) -> Dict[str, Any]:
         """
         Process document (PDF/Image) with hybrid OCR approach.
         
@@ -39,6 +44,7 @@ class OCRProcessor:
             url: URL of the document to process
             use_gpu_ocr: Whether to force GPU OCR (for complex documents)
             confidence_threshold: Minimum confidence before trying GPU OCR
+            route: Processing route (CPU_FAST or GPU_VISION) from intelligent ingestion
             
         Returns:
             Dict with extracted content and metadata
@@ -46,31 +52,31 @@ class OCRProcessor:
         Raises:
             Exception: If processing fails
         """
-        logger.info("Starting document processing", url=url, use_gpu_ocr=use_gpu_ocr)
+        logger.info("Starting document processing", url=url, use_gpu_ocr=use_gpu_ocr, route=route)
         
         try:
-            # First, try local Docling processing (CPU with granite-docling)
-            if not use_gpu_ocr:
+            # Use intelligent routing if provided
+            if route == "GPU_VISION" or use_gpu_ocr:
+                return await self._process_with_external_gpu(url)
+            
+            # Try CPU processing first (PyMuPDF + Docling no_ocr)
+            if route == "CPU_FAST" or not use_gpu_ocr:
                 try:
                     result = await self._process_with_docling_cpu(url)
                     
                     # Check if we need GPU OCR based on confidence
-                    if result.get("confidence", 0) < confidence_threshold or result.get("needs_gpu_ocr", False):
-                        logger.info("Low confidence detected, falling back to GPU OCR", 
+                    if result.get("confidence", 0) < confidence_threshold:
+                        logger.info("Low confidence detected, falling back to GPU OCR",
                                    confidence=result.get("confidence"),
                                    url=url)
-                        return await self._process_with_deepseek_gpu(url)
+                        return await self._process_with_external_gpu(url)
                     
                     return result
                     
                 except Exception as e:
-                    logger.warning("Docling CPU processing failed, falling back to GPU OCR", 
+                    logger.warning("CPU processing failed, falling back to GPU OCR",
                                  error=str(e))
-                    return await self._process_with_deepseek_gpu(url)
-            
-            # Direct GPU OCR if requested
-            if use_gpu_ocr:
-                return await self._process_with_deepseek_gpu(url)
+                    return await self._process_with_external_gpu(url)
                 
         except Exception as e:
             logger.error("Document processing failed", url=url, error=str(e))
@@ -154,10 +160,10 @@ class OCRProcessor:
             logger.error("Docling CPU processing failed", url=url, error=str(e))
             raise
 
-    async def _process_with_deepseek_gpu(self, url: str) -> Dict[str, Any]:
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def _process_with_external_gpu(self, url: str) -> Dict[str, Any]:
         """
-        Process document using DeepSeek OCR (GPU) via Ollama.
-        For PDFs, falls back to Docling processing since Ollama expects images.
+        Process document using external GPU API (Modal/DeepSeek).
         
         Args:
             url: URL of the document
@@ -165,107 +171,69 @@ class OCRProcessor:
         Returns:
             Dict with extracted content and metadata
         """
-        logger.info("Processing with DeepSeek OCR (GPU via Ollama)", url=url)
+        logger.info("Processing with external GPU API", url=url)
         
         try:
-            # Check if it's a PDF - if so, fall back to Docling with enhanced processing
-            if url.lower().endswith('.pdf'):
-                logger.info("PDF detected, using enhanced Docling processing instead of DeepSeek OCR", url=url)
-                return await self._process_pdf_with_enhanced_docling(url)
+            # Get API configuration from environment
+            gpu_api_url = os.getenv('GPU_OCR_API_URL', 'https://your-modal-endpoint.modal.run/ocr')
+            gpu_api_key = os.getenv('GPU_OCR_API_KEY', '')
             
-            # Use Ollama for DeepSeek OCR processing (for images only)
-            ollama_endpoint = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
-            deepseek_model = "deepseek-ocr:3b"  # Use DeepSeek OCR model for OCR tasks
+            # Prepare the request to external GPU API
+            ocr_request = {
+                "file_url": url,
+                "model": "deepseek-ocr",
+                "return_format": "markdown"
+            }
             
-            # Download file to temporary location
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp_file:
-                tmp_path = tmp_file.name
-                
-                # Download the file
-                logger.debug("Downloading document for DeepSeek OCR", url=url)
-                response = requests.get(url, timeout=60, stream=True)
-                response.raise_for_status()
-                
-                # Write to temp file
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp_file.write(chunk)
-                
-                file_size = os.path.getsize(tmp_path)
-                logger.debug("Document downloaded for DeepSeek OCR", size=file_size)
-                
-            try:
-                # Process with DeepSeek OCR via Ollama
-                logger.debug("Processing with DeepSeek OCR", model=deepseek_model)
-                
-                import time
-                start_time = time.time()
-                
-                # Read the file and encode as base64 for Ollama
-                import base64
-                with open(tmp_path, 'rb') as f:
-                    file_content = f.read()
-                
-                # Encode as base64 for JSON serialization
-                encoded_content = base64.b64encode(file_content).decode('utf-8')
-                
-                # Prepare the request to Ollama
-                ocr_request = {
-                    "model": deepseek_model,
-                    "prompt": f"Extract all text from this image and convert to markdown format. Preserve structure and formatting where possible.",
-                    "images": [encoded_content],  # Send as base64 encoded image
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "top_p": 0.9
-                    }
-                }
-                
-                # Call Ollama API with optimized timeout
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{ollama_endpoint}/api/generate",
-                        json=ocr_request,
-                        timeout=aiohttp.ClientTimeout(total=30)  # Reduce timeout for faster response
-                    ) as response:
-                        if response.status != 200:
-                            error_text = await response.text()
-                            raise Exception(f"Ollama DeepSeek OCR failed: {error_text}")
-                        
-                        result = await response.json()
-                        markdown = result.get("response", "")
-                        
-                        processing_time = time.time() - start_time
-                
-                # Calculate confidence for DeepSeek results
-                confidence = self._calculate_deepseek_confidence(markdown, result)
-                
-                logger.info("DeepSeek OCR processing completed",
-                           url=url,
-                           content_length=len(markdown),
-                           confidence=confidence,
-                           processing_time=processing_time)
-                
-                return {
-                    "markdown": markdown,
-                    "confidence": confidence,
-                    "needs_gpu_ocr": False,  # Already using GPU
-                    "processing_time": processing_time,
-                    "engine": "deepseek_gpu",
-                    "metadata": {
-                        "pages": 1,  # DeepSeek processes per page
-                        "file_size": file_size,
-                        "ocr_engine": "deepseek-ocr:3b",
-                        "ollama_host": ollama_endpoint
-                    }
-                }
-                
-            finally:
-                # Clean up temp file
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
+            headers = {"Content-Type": "application/json"}
+            if gpu_api_key:
+                headers["Authorization"] = f"Bearer {gpu_api_key}"
+            
+            import time
+            start_time = time.time()
+            
+            # Call external GPU API with tenacity retry
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    gpu_api_url,
+                    json=ocr_request,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60)  # Longer timeout for GPU processing
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"GPU OCR API failed: {error_text}")
                     
+                    result = await response.json()
+                    markdown = result.get("markdown", "")
+                    
+                    processing_time = time.time() - start_time
+            
+            # Calculate confidence for GPU results
+            confidence = self._calculate_gpu_confidence(markdown, result)
+            
+            logger.info("External GPU processing completed",
+                       url=url,
+                       content_length=len(markdown),
+                       confidence=confidence,
+                       processing_time=processing_time)
+            
+            return {
+                "markdown": markdown,
+                "confidence": confidence,
+                "needs_gpu_ocr": False,  # Already using GPU
+                "processing_time": processing_time,
+                "engine": "external_gpu",
+                "metadata": {
+                    "pages": result.get("pages", 1),
+                    "file_size": result.get("file_size", 0),
+                    "ocr_engine": "deepseek-ocr",
+                    "api_endpoint": gpu_api_url
+                }
+            }
+            
         except Exception as e:
-            logger.error("DeepSeek OCR processing failed", url=url, error=str(e))
+            logger.error("External GPU processing failed", url=url, error=str(e))
             raise
 
     async def _process_pdf_with_enhanced_docling(self, url: str) -> Dict[str, Any]:
@@ -386,13 +354,13 @@ class OCRProcessor:
         
         return round(confidence, 2)
 
-    def _calculate_deepseek_confidence(self, markdown: str, result: Dict[str, Any]) -> float:
+    def _calculate_gpu_confidence(self, markdown: str, result: Dict[str, Any]) -> float:
         """
-        Calculate confidence score for DeepSeek OCR extraction.
+        Calculate confidence score for external GPU OCR extraction.
         
         Args:
             markdown: Extracted markdown content
-            result: Ollama API result
+            result: External API result
             
         Returns:
             Confidence score (0-1)
@@ -488,7 +456,7 @@ class OCRProcessor:
 # Global processor instance
 _ocr_processor = None
 
-async def process_document(url: str, use_gpu_ocr: bool = False, confidence_threshold: float = 0.7) -> Dict[str, Any]:
+async def process_document(url: str, use_gpu_ocr: bool = False, confidence_threshold: float = 0.7, route: str = None) -> Dict[str, Any]:
     """
     Process document with hybrid OCR approach.
     
@@ -496,6 +464,7 @@ async def process_document(url: str, use_gpu_ocr: bool = False, confidence_thres
         url: URL of the document to process
         use_gpu_ocr: Whether to force GPU OCR
         confidence_threshold: Minimum confidence before trying GPU OCR
+        route: Processing route (CPU_FAST or GPU_VISION) from intelligent ingestion
         
     Returns:
         Dict with extracted content and metadata
@@ -505,7 +474,7 @@ async def process_document(url: str, use_gpu_ocr: bool = False, confidence_thres
     if _ocr_processor is None:
         _ocr_processor = OCRProcessor()
     
-    return await _ocr_processor.process_document(url, use_gpu_ocr, confidence_threshold)
+    return await _ocr_processor.process_document(url, use_gpu_ocr, confidence_threshold, route)
 
 def is_ocr_recommended(url: str, content_type: str) -> bool:
     """
