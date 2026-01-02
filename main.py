@@ -1,11 +1,18 @@
 import os
 import json
 from typing import Optional, TypedDict, Literal
-
 import httpx
 from apify import Actor
-
 from langgraph.graph import StateGraph, START, END
+
+# Import GLiNER for Tier 1 processing
+try:
+    from gliner import GLiNER
+    GLINER_AVAILABLE = True
+    gliner_model = None  # Will be loaded on demand
+except ImportError:
+    GLINER_AVAILABLE = False
+    gliner_model = None
 
 
 # ---- ENV (set in Apify Secrets / Env vars) ----
@@ -24,6 +31,7 @@ class DocState(TypedDict, total=False):
 
     ocr_text: str
     docling_json: dict
+    gliner_entities: dict
 
     used: str
     error: str
@@ -49,7 +57,63 @@ async def fetch_document(state: DocState, client: httpx.AsyncClient) -> DocState
     return {"bytes": r.content, "doc_type": detect_type(url)}
 
 
+async def call_gliner_extraction(state: DocState) -> DocState:
+    """Tier 1: GLiNER extraction - Instant and free for specific entities."""
+    if not GLINER_AVAILABLE:
+        return {"error": "GLiNER not available", "used": "gliner_not_available"}
+
+    # Get text content from state
+    text_content = state.get("ocr_text", "")
+    if not text_content:
+        # If no OCR text, try to decode bytes
+        if state.get("bytes"):
+            try:
+                text_content = state["bytes"].decode("utf-8", errors="ignore")
+            except:
+                return {"error": "Could not extract text for GLiNER processing", "used": "gliner_decode_error"}
+
+    # Load GLiNER model if not already loaded
+    global gliner_model
+    if gliner_model is None:
+        try:
+            gliner_model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
+        except Exception as e:
+            return {"error": f"Could not load GLiNER model: {str(e)}", "used": "gliner_load_error"}
+
+    # Define common labels for document processing
+    labels = [
+        "invoice_number", "date", "total_amount", "vendor_name", "customer_name",
+        "item", "quantity", "price", "subtotal", "tax", "due_date", "po_number",
+        "payment_terms", "address", "phone", "email", "website"
+    ]
+
+    try:
+        # Extract entities using GLiNER
+        entities = gliner_model.predict_entities(text_content, labels)
+
+        # Format entities into structured data
+        structured_entities = {}
+        for entity in entities:
+            label = entity['label']
+            text = entity['text']
+
+            # Group entities by label
+            if label not in structured_entities:
+                structured_entities[label] = []
+            structured_entities[label].append(text)
+
+        return {
+            "gliner_entities": structured_entities,
+            "used": "gliner_extraction",
+            "ocr_text": text_content  # Pass through the text for downstream processing
+        }
+
+    except Exception as e:
+        return {"error": f"GLiNER extraction failed: {str(e)}", "used": "gliner_extraction_error"}
+
+
 async def call_deepseek_ocr(state: DocState, client: httpx.AsyncClient) -> DocState:
+    """Tier 3: DeepSeek OCR - Premium processing for complex documents."""
     if not DEEPSEEK_BASE_URL:
         return {"error": "Missing DEEPSEEK_BASE_URL"}
 
@@ -94,8 +158,18 @@ async def call_deepseek_ocr(state: DocState, client: httpx.AsyncClient) -> DocSt
 
 
 async def call_granite_docling(state: DocState, client: httpx.AsyncClient) -> DocState:
+    """Tier 2: Granite Docling - Cheap CPU processing for structured extraction."""
     if not GRANITE_BASE_URL:
         return {"error": "Missing GRANITE_BASE_URL"}
+
+    # Use the text from either GLiNER (if it ran) or OCR
+    text_to_process = state.get('gliner_entities', state.get('ocr_text', ''))
+
+    # If text_to_process is a dict (from GLiNER), convert to string
+    if isinstance(text_to_process, dict):
+        text_str = json.dumps(text_to_process, indent=2)
+    else:
+        text_str = str(text_to_process)
 
     # Based on research, llama.cpp servers may use different endpoints
     # Common endpoints are /v1/chat/completions or /completion
@@ -108,7 +182,7 @@ async def call_granite_docling(state: DocState, client: httpx.AsyncClient) -> Do
         "model": "granite-docling",  # Model identifier
         "messages": [
             {"role": "system", "content": "You are a document understanding engine. Extract structured information from the provided text."},
-            {"role": "user", "content": f"Extract structured information from this text:\n{state.get('ocr_text', '')}"},
+            {"role": "user", "content": f"Extract structured information from this text:\n{text_str}"},
         ],
         "temperature": 0,
         "max_tokens": 1024,
@@ -123,7 +197,7 @@ async def call_granite_docling(state: DocState, client: httpx.AsyncClient) -> Do
         # Fallback to /completion endpoint
         try:
             payload = {
-                "prompt": f"Extract structured information from this text:\n{state.get('ocr_text', '')}",
+                "prompt": f"Extract structured information from this text:\n{text_str}",
                 "temperature": 0,
                 "max_tokens": 1024,
             }
@@ -148,13 +222,20 @@ async def call_granite_docling(state: DocState, client: httpx.AsyncClient) -> Do
 def build_graph():
     g = StateGraph(DocState)
 
-    # Define the actual processing functions as nodes
+    # Define the processing nodes
     g.add_node("fetch", fetch_document)
-    g.add_node("ocr", call_deepseek_ocr)
-    g.add_node("docling", call_granite_docling)
+    g.add_node("gliner", call_gliner_extraction)  # Tier 1: Free & Instant
+    g.add_node("ocr", call_deepseek_ocr)          # Tier 3: Premium
+    g.add_node("docling", call_granite_docling)   # Tier 2: Cheap
 
+    # Define the flow: fetch -> try GLiNER first -> fallback to OCR -> process with Docling
     g.add_edge(START, "fetch")
-    g.add_edge("fetch", "ocr")
+    g.add_edge("fetch", "gliner")
+
+    # After GLiNER, we can either go to docling directly (if GLiNER succeeded)
+    # or to OCR (if GLiNER failed) and then to docling
+    # For now, we'll always go to OCR as fallback and then to docling
+    g.add_edge("gliner", "ocr")
     g.add_edge("ocr", "docling")
     g.add_edge("docling", END)
 
