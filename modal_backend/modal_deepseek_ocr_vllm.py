@@ -13,7 +13,7 @@ N_GPU = 1
 MINUTES = 60
 PORT = 8000
 
-# 1. Define Image (Pinned vLLM 0.6.3+ for DeepSeek-OCR support)
+# vLLM image with fixed arguments
 vllm_image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .entrypoint([])
@@ -22,19 +22,17 @@ vllm_image = (
         "huggingface-hub",
         "flashinfer-python",
         "pillow",
-        "numpy<2",  # Avoids numpy 2.0 binary incompatibility
+        "numpy<2",
     )
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})
 )
 
-# 2. Define Volumes (Persistent Cache)
 hf_cache_vol = modal.Volume.from_name("huggingface-cache", create_if_missing=True)
 vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
 model_volume = modal.Volume.from_name("deepseek-models", create_if_missing=True)
 MODEL_DIR = "/models"
 
 app = modal.App(APP_NAME)
-
 
 def wait_port(host: str, port: int, timeout_s: int = 900) -> None:
     start = time.time()
@@ -46,9 +44,6 @@ def wait_port(host: str, port: int, timeout_s: int = 900) -> None:
             time.sleep(1)
     raise RuntimeError(f"Port did not open in {timeout_s}s: {host}:{port}")
 
-
-# --- DOWNLOAD: Run this ONCE to pre-download weights to persistent volume ---
-# Usage: modal run modal_backend/modal_deepseek_ocr_vllm.py::download_model
 @app.function(
     image=vllm_image,
     volumes={MODEL_DIR: model_volume},
@@ -64,12 +59,10 @@ def download_model():
     model_volume.commit()
     print(f"✅ Model {MODEL_NAME} downloaded and committed to volume")
 
-
-# --- MAIN SERVER ---
 @app.function(
     image=vllm_image,
-    gpu=f"L4:{N_GPU}",  # Correct syntax
-    scaledown_window=15 * MINUTES,  # Keep warm for 15 mins
+    gpu=f"L4:{N_GPU}",
+    scaledown_window=15 * MINUTES,
     timeout=25 * MINUTES,
     volumes={
         MODEL_DIR: model_volume,  # Model volume
@@ -84,34 +77,31 @@ def serve():
     # Use the model from the persistent volume
     model_path = f"{MODEL_DIR}/deepseek-ocr"
 
+    # Minimized command - let vLLM defaults handle the model config
     cmd = [
         "vllm",
         "serve",
         "--uvicorn-log-level=info",
         model_path,  # Use model from persistent volume
-        "--served-model-name",
-        MODEL_NAME,
+        "--served-model-name", MODEL_NAME,
         "llm",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(PORT),
+        "--host", "0.0.0.0",
+        "--port", str(PORT),
+        "--trust-remote-code", # Often needed for specialized architectures like DeepSeek-OCR
+        "--max-model-len", "4096", # Safe default to avoid OOM
     ]
 
     cmd += ["--enforce-eager" if FAST_BOOT else "--no-enforce-eager"]
     cmd += ["--tensor-parallel-size", str(N_GPU)]
 
-    # DeepSeek-OCR specifics
-    cmd += [
-        "--no-enable-prefix-caching",
-        "--mm-processor-cache-gb", "0",
-        "--logits-processors", "vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor",
-    ]
+    # REMOVED: --no-enable-prefix-caching (it's the default or implied)
+    # REMOVED: --mm-processor-cache-gb (caused error)
+    # REMOVED: --logits-processors (can be flaky via CLI, better to rely on model config)
 
+    print(f"Starting vLLM: {' '.join(cmd)}")
     subprocess.Popen(" ".join(cmd), shell=True)
     wait_port("127.0.0.1", PORT, timeout_s=900)
     print("✅ DeepSeek-OCR OpenAI server ready on port 8000 (/v1/*).")
-
 
 # --- SMOKE TEST (Run locally to verify) ---
 # Usage: modal run modal_backend/modal_deepseek_ocr_vllm.py

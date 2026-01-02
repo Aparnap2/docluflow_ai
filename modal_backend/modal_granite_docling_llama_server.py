@@ -3,11 +3,9 @@ import os
 import time
 import socket
 import subprocess
-from huggingface_hub import hf_hub_download
 
 APP_NAME = "docuflow-granite-docling-cpu"
 
-# FIX: Correct Repo ID (was 'infl002')
 HF_REPO_ID = "infil00p/granite-docling-258M-GGUF"
 MODEL_DIR = "/models/granite-gguf"
 MODEL_FILE = "granite-docling-258M-Q4_K_M.gguf"
@@ -16,23 +14,21 @@ MMPROJ_FILE = "mmproj-granite-docling-258M-f16.gguf"
 PORT = 8000
 MINUTES = 60
 
+# Build llama.cpp from source to get latest Granite support
 image = (
     modal.Image.from_registry("python:3.11-slim")
-    .apt_install("wget", "tar", "ca-certificates")
-    .pip_install("huggingface_hub")  # Added for download_model
+    .apt_install("git", "build-essential", "cmake", "wget", "libcurl4-openssl-dev")
+    .pip_install("huggingface_hub")
     .run_commands(
-        # Install llama-server (llama.cpp)
-        "wget -q -O /tmp/llama.tar.gz https://github.com/ggerganov/llama.cpp/releases/download/b4408/llama-b4408-bin-linux-x64-cpu_avx2.tar.gz",
-        "tar -xzf /tmp/llama.tar.gz -C /tmp",
-        "find /tmp -type f -name llama-server -exec mv {} /usr/local/bin/llama-server \\;",
-        "chmod +x /usr/local/bin/llama-server",
+        "git clone https://github.com/ggml-org/llama.cpp /root/llama.cpp",
+        "cd /root/llama.cpp && cmake -B build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON && cmake --build build --config Release -j $(nproc)",
+        "cp /root/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server"
     )
 )
 
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name("granite-models-v2", create_if_missing=True)
 
-# --- HELPER: Wait for Port ---
 def wait_port(host: str, port: int, timeout_s: int = 180) -> None:
     start = time.time()
     while time.time() - start < timeout_s:
@@ -43,7 +39,6 @@ def wait_port(host: str, port: int, timeout_s: int = 180) -> None:
             time.sleep(1)
     raise RuntimeError(f"Port did not open in {timeout_s}s: {host}:{port}")
 
-# --- SETUP: Download Model to Volume (Run Once) ---
 @app.function(
     image=image,
     volumes={MODEL_DIR: model_volume},
@@ -54,27 +49,19 @@ def download_model():
     import shutil
 
     print(f"Downloading models from {HF_REPO_ID}...")
-
-    # 1. Download Main Model (GGUF)
-    print(f"Fetching {MODEL_FILE}...")
     path1 = hf_hub_download(repo_id=HF_REPO_ID, filename=MODEL_FILE)
     shutil.copy(path1, os.path.join(MODEL_DIR, MODEL_FILE))
 
-    # 2. Download Vision Adapter (mmproj) - REQUIRED for Docling
-    print(f"Fetching {MMPROJ_FILE}...")
     path2 = hf_hub_download(repo_id=HF_REPO_ID, filename=MMPROJ_FILE)
     shutil.copy(path2, os.path.join(MODEL_DIR, MMPROJ_FILE))
+    print("✅ Download complete.")
 
-    print("✅ Download complete. Files saved to Volume.")
-    print(os.listdir(MODEL_DIR))
-
-# --- SERVER: Run llama-server ---
 @app.function(
     image=image,
     cpu=8.0,
     memory=8192,
     timeout=30 * MINUTES,
-    scaledown_window=10 * MINUTES, # Fixed param name
+    scaledown_window=10 * MINUTES,
     volumes={MODEL_DIR: model_volume},
 )
 @modal.concurrent(max_inputs=20)
@@ -83,26 +70,24 @@ def serve():
     model_path = os.path.join(MODEL_DIR, MODEL_FILE)
     mmproj_path = os.path.join(MODEL_DIR, MMPROJ_FILE)
 
-    # Check if files exist (just in case download_model wasn't run)
     if not os.path.exists(model_path):
-        print("⚠️ Model not found! Running download...")
-        # Fallback download (slower on boot)
         subprocess.run(["huggingface-cli", "download", HF_REPO_ID, MODEL_FILE, "--local-dir", MODEL_DIR, "--local-dir-use-symlinks", "False"])
         subprocess.run(["huggingface-cli", "download", HF_REPO_ID, MMPROJ_FILE, "--local-dir", MODEL_DIR, "--local-dir-use-symlinks", "False"])
 
+    # llama-server (latest build)
     cmd = [
         "/usr/local/bin/llama-server",
-        "-m", model_path,
+        "--model", model_path,
         "--mmproj", mmproj_path,
         "--host", "0.0.0.0",
         "--port", str(PORT),
-        "--n-gpu-layers", "0", # Pure CPU
+        "--n-gpu-layers", "0",
         "--threads", "8",
-        "--ctx-size", "4096", # Context window for docs
-        "--parallel", "4"     # Handle concurrent requests
+        "--ctx-size", "4096"
     ]
 
-    print("Starting llama-server...")
+    print("Starting compiled llama-server...")
     subprocess.Popen(cmd)
     wait_port("127.0.0.1", PORT, timeout_s=180)
-    print("✅ Granite llama-server ready on port 8000.")
+    print("✅ Granite llama server ready on port 8000.")
+
