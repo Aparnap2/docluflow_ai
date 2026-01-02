@@ -1,0 +1,11 @@
+INVOICE
+Date: January 15, 2024
+Invoice Number: INV-2024-001
+Vendor: TechCorp Solutions
+Amount: $1,250.00
+
+This is a test document for DocuFlow Headless v2 production testing.
+The system should extract vendor information, dates, and amounts.
+
+Payment Terms: Net 30
+Due Date: February 14, 2024

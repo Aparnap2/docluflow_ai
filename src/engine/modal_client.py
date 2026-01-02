@@ -1,212 +1,164 @@
-"""Modal client for calling vLLM endpoints with OpenAI SDK format."""
+"""
+Production-Grade Modal Client with Exponential Backoff & Retry
+Handles serverless cold starts, transient errors, and network flakes
+"""
 
-import os
-import tempfile
+import time
 import requests
+import logging
 from typing import Dict, Any, Optional
-from openai import AsyncOpenAI
-import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-class ModalClient:
-    """Client for calling Modal vLLM endpoints with OpenAI SDK format."""
+def create_robust_session():
+    """Create a requests session with retry logic for serverless cold starts."""
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+def call_modal_with_retry(url: str, payload: Dict[str, Any], max_retries: int = 3, 
+                          initial_timeout: int = 60) -> Optional[Dict[str, Any]]:
+    """
+    Robustly calls a Modal endpoint with retries and exponential backoff.
+    Handles cold starts (long timeouts) and transient failures (503s).
     
-    def __init__(self, endpoint_url: str, model_name: str, timeout: int = 120):
-        """
-        Initialize Modal client.
-        
-        Args:
-            endpoint_url: Modal endpoint URL
-            model_name: Model name to use
-            timeout: Request timeout in seconds
-        """
-        self.endpoint_url = endpoint_url.rstrip('/')  # Remove trailing slash
-        self.model_name = model_name
-        self.timeout = timeout
-        
-        # Initialize OpenAI-compatible client
-        self.client = AsyncOpenAI(
-            base_url=f"{self.endpoint_url}/v1",
-            api_key="EMPTY",  # Modal doesn't require API key
-            timeout=timeout,
-            max_retries=2
-        )
-        
-        logger.info("Modal client initialized", 
-                   endpoint=endpoint_url, 
-                   model=model_name,
-                   timeout=timeout)
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def process_document(self, file_path: str, prompt: str) -> str:
-        """
-        Process document with Modal vLLM endpoint.
-        
-        Args:
-            file_path: Path to the document file
-            prompt: Processing prompt
-            
-        Returns:
-            Extracted text content
-        """
+    Args:
+        url: Modal endpoint URL
+        payload: Request payload
+        max_retries: Maximum number of retry attempts
+        initial_timeout: Initial timeout in seconds (increases with retries)
+    
+    Returns:
+        Response JSON or None if all retries failed
+    """
+    session = create_robust_session()
+    
+    for attempt in range(max_retries):
         try:
-            # Read file content
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
+            # Increase timeout on subsequent retries (give it more time if it failed once)
+            current_timeout = initial_timeout + (attempt * 30)
             
-            # For vision models (DeepSeek-OCR), we need to encode image
-            if "deepseek" in self.model_name.lower() and self._is_image_file(file_path):
-                return await self._process_with_vision(file_path, prompt, file_content)
-            else:
-                return await self._process_with_text(prompt)
+            logger.info(f"Calling Modal (Attempt {attempt+1}/{max_retries})... timeout={current_timeout}s")
+            logger.debug(f"URL: {url}, Payload size: {len(str(payload))} chars")
+            
+            response = session.post(url, json=payload, timeout=current_timeout)
+            
+            # Case 1: Success
+            if response.status_code == 200:
+                logger.info(f"Modal request successful on attempt {attempt+1}")
+                return response.json()
                 
-        except Exception as e:
-            logger.error("Modal processing failed", 
-                        error=str(e), 
-                        file_path=file_path,
-                        model=self.model_name)
-            raise
+            # Case 2: Container Starting / Overloaded (503, 502, 504)
+            elif response.status_code in [502, 503, 504]:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s...
+                logger.warning(f"Modal busy/starting ({response.status_code}). Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+                
+            # Case 3: Application Error (400, 500) - Don't retry
+            else:
+                logger.error(f"Modal Error {response.status_code}: {response.text}")
+                return None
 
-    def _is_image_file(self, file_path: str) -> bool:
-        """Check if file is an image."""
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
-        return any(file_path.lower().endswith(ext) for ext in image_extensions)
+        except requests.exceptions.ReadTimeout:
+            # Case 4: Timeout (Cold start took too long) - Retry
+            logger.warning(f"Request timed out (>{current_timeout}s). Retrying...")
+            continue
+            
+        except requests.exceptions.ConnectionError:
+            # Case 5: Connection failed - Retry
+            logger.warning("Connection error. Retrying...")
+            time.sleep(1)
+            continue
+            
+    logger.error("Max retries exceeded for Modal endpoint.")
+    return None
 
-    async def _process_with_vision(self, file_path: str, prompt: str, file_content: bytes) -> str:
-        """Process image with vision model."""
-        import base64
-        from PIL import Image
-        
+def call_modal_health_check(url: str, max_retries: int = 3, timeout: int = 90) -> bool:
+    """
+    Robust health check for Modal endpoints with retry logic.
+    
+    Args:
+        url: Health endpoint URL
+        max_retries: Maximum number of retry attempts
+        timeout: Timeout per attempt
+    
+    Returns:
+        True if healthy, False otherwise
+    """
+    session = create_robust_session()
+    
+    for attempt in range(max_retries):
         try:
-            # Convert image to base64
-            image = Image.open(file_path)
+            logger.info(f"Health check (Attempt {attempt+1}/{max_retries})... timeout={timeout}s")
             
-            # Resize if too large (Modal has limits)
-            max_size = (1024, 1024)
-            if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
-                image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            response = session.get(url, timeout=timeout)
             
-            # Save to bytes
-            import io
-            buffer = io.BytesIO()
-            image.save(buffer, format='PNG')
-            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            if response.status_code == 200:
+                logger.info(f"Health check successful on attempt {attempt+1}")
+                return True
+            elif response.status_code in [502, 503, 504]:
+                wait_time = 2 ** attempt
+                logger.warning(f"Service unavailable ({response.status_code}). Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error(f"Health check failed with status {response.status_code}")
+                return False
+                
+        except requests.exceptions.ReadTimeout:
+            logger.warning(f"Health check timed out (>{timeout}s). Retrying...")
+            continue
+        except requests.exceptions.ConnectionError:
+            logger.warning("Connection error during health check. Retrying...")
+            time.sleep(1)
+            continue
             
-            # Create vision prompt
-            vision_prompt = f"""{prompt}
+    logger.error("Health check failed after all retries.")
+    return False
 
-Please analyze this image and extract any text, tables, or structured information you can find.
+# Convenience functions for specific endpoints
+def call_modal_cpu(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Call Modal CPU endpoint with robust retry logic."""
+    return call_modal_with_retry(f"{endpoint}/process", payload)
 
-Image: data:image/png;base64,{image_base64}"""
-            
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "user", "content": vision_prompt}
-                ],
-                temperature=0.0,
-                max_tokens=2048
-            )
-            
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            logger.error("Vision processing failed", error=str(e), file_path=file_path)
-            # Fallback to text-only processing
-            return await self._process_with_text(prompt)
+def call_modal_gpu(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Call Modal GPU endpoint with robust retry logic."""
+    return call_modal_with_retry(f"{endpoint}/process", payload)
 
-    async def _process_with_text(self, prompt: str) -> str:
-        """Process with text-only model."""
-        response = await self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.0,
-            max_tokens=2048
-        )
-        
-        return response.choices[0].message.content
+def call_modal_extract(endpoint: str, file_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Call Modal extract endpoint with file upload."""
+    return call_modal_with_retry(f"{endpoint}/extract", file_data)
 
-    async def health_check(self) -> Dict[str, Any]:
-        """Check if the Modal endpoint is healthy."""
-        try:
-            # Try to get model info
-            response = await self.client.models.list()
-            return {
-                "status": "healthy",
-                "endpoint": self.endpoint_url,
-                "model": self.model_name,
-                "available_models": [model.id for model in response.data] if response.data else []
-            }
-        except Exception as e:
-            logger.error("Health check failed", error=str(e), endpoint=self.endpoint_url)
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "endpoint": self.endpoint_url,
-                "model": self.model_name
-            }
-
-class ModalCPUClient(ModalClient):
-    """Specialized client for Granite-Docling CPU endpoint."""
+# Example usage for testing
+if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(level=logging.INFO)
     
-    def __init__(self, timeout: int = 60):
-        """Initialize CPU client with Granite-Docling endpoint."""
-        endpoint_url = os.getenv('MODAL_GRANITE_URL')
-        if not endpoint_url:
-            raise ValueError("MODAL_GRANITE_URL environment variable is required")
-        
-        super().__init__(endpoint_url, "ibm-granite/granite-docling-258M", timeout)
-
-class ModalGPUClient(ModalClient):
-    """Specialized client for DeepSeek-OCR GPU endpoint."""
+    # Test health check
+    cpu_health = call_modal_health_check("https://ap3617180--docuflow-cpu-granite-gguf-serve.modal.run/health")
+    gpu_health = call_modal_health_check("https://ap3617180--docuflow-gpu-deepseek-serve.modal.run/health")
     
-    def __init__(self, timeout: int = 120):
-        """Initialize GPU client with DeepSeek-OCR endpoint."""
-        endpoint_url = os.getenv('MODAL_DEEPSEEK_URL')
-        if not endpoint_url:
-            raise ValueError("MODAL_DEEPSEEK_URL environment variable is required")
-        
-        super().__init__(endpoint_url, "deepseek-ai/DeepSeek-OCR", timeout)
-
-# Convenience functions for easy integration
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def process_with_granite_docling(file_path: str, prompt: str) -> str:
-    """Process document with Granite-Docling CPU model."""
-    client = ModalCPUClient()
-    return await client.process_document(file_path, prompt)
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def process_with_deepseek_ocr(file_path: str, prompt: str) -> str:
-    """Process document with DeepSeek-OCR GPU model."""
-    client = ModalGPUClient()
-    return await client.process_document(file_path, prompt)
-
-async def check_modal_endpoints() -> Dict[str, Any]:
-    """Check health of all Modal endpoints."""
-    results = {}
+    print(f"CPU Health: {'✅' if cpu_health else '❌'}")
+    print(f"GPU Health: {'✅' if gpu_health else '❌'}")
     
-    # Check Granite-Docling CPU endpoint
-    try:
-        cpu_client = ModalCPUClient()
-        results['granite_docling'] = await cpu_client.health_check()
-    except Exception as e:
-        results['granite_docling'] = {
-            "status": "not_configured",
-            "error": str(e)
-        }
+    # Test processing
+    test_payload = {
+        "text": "Invoice #INV-2024-001\nDate: 2024-01-15\nVendor: TechCorp Solutions\nTotal: $1,250.00"
+    }
     
-    # Check DeepSeek-OCR GPU endpoint
-    try:
-        gpu_client = ModalGPUClient()
-        results['deepseek_ocr'] = await gpu_client.health_check()
-    except Exception as e:
-        results['deepseek_ocr'] = {
-            "status": "not_configured",
-            "error": str(e)
-        }
-    
-    return results
+    result = call_modal_cpu("https://ap3617180--docuflow-cpu-granite-gguf-serve.modal.run", test_payload)
+    if result:
+        print("CPU Processing Result:", result.get("status"))
+    else:
+        print("CPU Processing Failed")
