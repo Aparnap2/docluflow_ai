@@ -2,6 +2,7 @@ import time
 import socket
 import subprocess
 import modal
+import aiohttp
 from huggingface_hub import snapshot_download
 
 APP_NAME = "docuflow-deepseek-ocr-openai"
