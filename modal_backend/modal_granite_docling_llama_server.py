@@ -16,7 +16,7 @@ MINUTES = 60
 
 # Build llama.cpp from source to get latest Granite support
 image = (
-    modal.Image.from_registry("python:3.11-slim")
+    modal.Image.from_registry("python:3.12-slim")
     .apt_install("git", "build-essential", "cmake", "wget", "libcurl4-openssl-dev")
     .pip_install("huggingface_hub")
     .run_commands(
@@ -60,12 +60,14 @@ def download_model():
     image=image,
     cpu=8.0,
     memory=8192,
-    timeout=30 * MINUTES,
-    scaledown_window=10 * MINUTES,
+    scaledown_window=15 * MINUTES,  # how long should we stay up with no requests?
+    timeout=10 * MINUTES,  # how long should we wait for container start?
     volumes={MODEL_DIR: model_volume},
 )
-@modal.concurrent(max_inputs=20)
-@modal.web_server(port=PORT, startup_timeout=15 * MINUTES)
+@modal.concurrent(  # how many requests can one replica handle? tune carefully!
+    max_inputs=20
+)
+@modal.web_server(port=PORT, startup_timeout=10 * MINUTES)
 def serve():
     model_path = os.path.join(MODEL_DIR, MODEL_FILE)
     mmproj_path = os.path.join(MODEL_DIR, MMPROJ_FILE)
@@ -74,16 +76,19 @@ def serve():
         subprocess.run(["huggingface-cli", "download", HF_REPO_ID, MODEL_FILE, "--local-dir", MODEL_DIR, "--local-dir-use-symlinks", "False"])
         subprocess.run(["huggingface-cli", "download", HF_REPO_ID, MMPROJ_FILE, "--local-dir", MODEL_DIR, "--local-dir-use-symlinks", "False"])
 
-    # llama-server (latest build)
+    # llama-server (latest build) with parameters aligned to documentation
     cmd = [
         "/usr/local/bin/llama-server",
         "--model", model_path,
         "--mmproj", mmproj_path,
         "--host", "0.0.0.0",
         "--port", str(PORT),
-        "--n-gpu-layers", "0",
+        "--n-gpu-layers", "0",  # Pure CPU
         "--threads", "8",
-        "--ctx-size", "4096"
+        "--ctx-size", "4096",  # Context window for docs
+        "--batch-size", "512",  # Batch size for processing
+        "--parallel", "4",      # Handle concurrent requests
+        "--log-disable"         # Reduce logging overhead
     ]
 
     print("Starting compiled llama-server...")
