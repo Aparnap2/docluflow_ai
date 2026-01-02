@@ -57,6 +57,7 @@ def download_model():
         repo_id=MODEL_NAME,
         local_dir=f"{MODEL_DIR}/deepseek-ocr",
         local_dir_use_symlinks=False,
+        revision="main"  # Use main branch to ensure we get the right files
     )
     model_volume.commit()
     print(f"✅ Model {MODEL_NAME} downloaded and committed to volume")
@@ -67,6 +68,7 @@ def download_model():
     scaledown_window=15 * MINUTES,  # how long should we stay up with no requests?
     timeout=10 * MINUTES,  # how long should we wait for container start?
     volumes={
+        MODEL_DIR: model_volume,  # Model volume
         "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,
     },
@@ -83,10 +85,9 @@ def serve():
         "vllm",
         "serve",
         "--uvicorn-log-level=info",
-        model_path,
+        model_path,  # Use model from persistent volume
         "--served-model-name",
         MODEL_NAME,
-        "llm",
         "--host",
         "0.0.0.0",
         "--port",
@@ -103,10 +104,18 @@ def serve():
     # DeepSeek-OCR specific configurations
     cmd += [
         "--trust-remote-code",  # Required for DeepSeek-OCR's custom architecture
-        "--max-model-len", "4096",  # Safe default to avoid OOM
+        "--dtype", "auto",  # Use auto dtype for optimal performance
+        "--enforce-eager",  # Skip CUDA graph capture for faster cold start
+        "--gpu-memory-utilization", "0.9",  # Use 90% of GPU memory
+        "--max-num-batched-tokens", "8192",  # Limit for cost control
+        "--max-model-len", "4096",  # Limit context length
     ]
 
-    print(cmd)
+    # DeepSeek-OCR specific logits processor (if needed)
+    # Commenting out for now as it may cause issues
+    # cmd += ["--override-neural-compressor"]
+
+    print(f"Starting vLLM server with command: {' '.join(cmd)}")
 
     subprocess.Popen(" ".join(cmd), shell=True)
 
