@@ -1,5 +1,5 @@
 """
-Final Apify Actor for Document Processing with DeepInfra and Ollama Integration
+Apify Actor for Document Processing with DeepInfra and Ollama Integration
 
 This actor processes documents using:
 - DeepSeek-OCR via DeepInfra (production) or local Ollama (development) for OCR
@@ -77,9 +77,9 @@ def build_dynamic_model(schema: Dict[str, Any]) -> type[BaseModel]:
         }
 
         py_type = type_map.get(field_type, (str, None))[0]
-        model_fields[name] = (Optional[py_type], description)
+        model_fields[name] = (Optional[py_type], None)  # Use Optional to prevent hallucinations
 
-    return create_model("UserSchemaModel", **model_fields)
+    return create_model("DynamicSchema", **model_fields)
 
 
 async def fetch_document(doc_url: str) -> bytes:
@@ -92,22 +92,26 @@ async def fetch_document(doc_url: str) -> bytes:
 
 def docling_pdf_to_markdown(pdf_bytes: bytes) -> str:
     """Convert PDF to markdown using Docling library."""
-    import tempfile
-    import os
-    
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
-        temp_pdf.write(pdf_bytes)
-        temp_pdf_path = temp_pdf.name
-
     try:
-        # Use Docling to convert PDF to markdown
-        converter = DocumentConverter()
-        result = converter.convert(temp_pdf_path)
-        markdown_text = result.document.export_to_markdown()
-        return markdown_text
-    finally:
-        # Clean up temporary file
-        os.unlink(temp_pdf_path)
+        # Create a temporary file to work with Docling
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
+
+        try:
+            # Use Docling to convert PDF to markdown
+            converter = DocumentConverter()
+            result = converter.convert(temp_pdf_path)
+            markdown_text = result.document.export_to_markdown()
+            return markdown_text
+        finally:
+            # Clean up temporary file
+            os.unlink(temp_pdf_path)
+    except Exception as e:
+        raise Exception(f"PDF conversion failed: {str(e)}")
 
 
 async def extract_with_gliner(text_content: str) -> Dict[str, Any]:
@@ -502,7 +506,7 @@ async def main() -> None:
                     "doc_url": doc_url,
                     "status": "error",
                     "error": str(e),
-                    "processing_method": "error",
+                    "processing_steps": ["error"],
                     "errors": [str(e)]
                 }
                 await Actor.push_data(error_result)
