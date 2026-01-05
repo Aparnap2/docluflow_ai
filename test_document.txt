@@ -1,5 +1,0 @@
-Invoice #INV-2024-001
-Date: 2024-01-15
-Vendor: TechCorp Solutions
-Total: $1,250.00
-Items: Software License, Support Services
