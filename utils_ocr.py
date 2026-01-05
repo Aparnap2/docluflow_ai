@@ -3,26 +3,57 @@ import os
 import httpx
 from docling.document_converter import DocumentConverter
 from docling.datamodel.pipeline_options import PipelineOptions
+from utils_security import (
+    validate_document_url,
+    validate_and_prepare_document,
+    truncate_text
+)
 
 async def run_docling(doc_url: str, use_vlm_for_tables: bool = False) -> str:
     """
     Convert document to markdown using Docling.
     
+    Includes enterprise-grade security checks:
+    - URL validation
+    - File type verification (magic bytes)
+    - Encryption detection
+    - Filename sanitization
+    
     Args:
         doc_url: URL of the document to process
         use_vlm_for_tables: If True, use VLM backend for complex tables (merged cells)
                            This is slower but handles complex quote tables better
+    
+    Returns:
+        Markdown text from document
+        
+    Raises:
+        ValueError: If document fails security checks
     """
+    # Validate URL before fetching
+    url_error = validate_document_url(doc_url)
+    if url_error:
+        raise ValueError(f"Invalid document URL: {url_error.get('error')}")
+    
     # Fetch the document
     async with httpx.AsyncClient(timeout=300) as client:  # Increased timeout for large docs
         response = await client.get(doc_url, follow_redirects=True)
         response.raise_for_status()
         doc_bytes = response.content
 
-    # Convert PDF to markdown using Docling
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
-        temp_pdf.write(doc_bytes)
-        temp_pdf_path = temp_pdf.name
+    # Comprehensive validation and preparation
+    validation_result = validate_and_prepare_document(doc_url, doc_bytes)
+    
+    if validation_result.get("error"):
+        error_info = validation_result["error"]
+        raise ValueError(f"Document validation failed: {error_info.get('error')} (type: {error_info.get('error_type')})")
+    
+    temp_pdf_path = validation_result["file_path"]
+    file_size_mb = validation_result["file_size_mb"]
+    
+    # Log if compression was applied
+    if validation_result.get("was_compressed"):
+        print(f"Document compressed from {file_size_mb:.1f}MB")
 
     try:
         # Configure Docling pipeline options

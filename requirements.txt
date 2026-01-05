@@ -34,3 +34,7 @@ typing-extensions>=4.12.2
 
 # For load testing and monitoring
 psutil>=5.9.0
+
+# Security and validation utilities
+pypdf>=3.0.0  # For PDF encryption detection
+python-magic>=0.4.27  # For file type verification (magic bytes)

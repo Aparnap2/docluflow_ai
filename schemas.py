@@ -1,6 +1,29 @@
-from typing import Literal, List, Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Literal, List, Optional, Annotated
+from pydantic import BaseModel, Field, field_validator, model_validator, BeforeValidator
 from datetime import date, timedelta
+import re
+
+
+# Pre-validator for money strings (handles "$1,200.00" format)
+def clean_money(v: str | float) -> float:
+    """Clean money string to float. Handles '$1,200.00' format automatically."""
+    if isinstance(v, float):
+        return v
+    if isinstance(v, int):
+        return float(v)
+    
+    # Remove currency symbols, commas, whitespace
+    clean = str(v).replace('$', '').replace(',', '').replace(' ', '').strip()
+    
+    # Try to convert to float
+    try:
+        return float(clean)
+    except (ValueError, TypeError):
+        # If conversion fails, return 0.0 (will be flagged in warnings)
+        return 0.0
+
+# Type alias for money fields
+Money = Annotated[float, BeforeValidator(clean_money)]
 
 class LeaseSchema(BaseModel):
     doc_type: Literal["lease"] = "lease"
@@ -39,7 +62,7 @@ class LeaseSchema(BaseModel):
 class QuoteSchema(BaseModel):
     doc_type: Literal["quote"] = "quote"
     vendor_name: Optional[str] = None  # Made Optional to prevent hallucination
-    total_amount: Optional[float] = None  # Made Optional to prevent hallucination
+    total_amount: Optional[Money] = None  # Money type handles "$1,200.00" format automatically
     hidden_fees_found: bool = Field(default=False, description="True if fees like 'haul-away' are excluded")
     line_items_standardized: List[str] = Field(default_factory=list)
     true_cost: Optional[float] = None
@@ -71,7 +94,7 @@ class QuoteSchema(BaseModel):
 class CoiSchema(BaseModel):
     doc_type: Literal["coi"] = "coi"
     expiration_date: Optional[date] = None  # Made Optional to prevent hallucination
-    policy_limit: Optional[float] = Field(None, description="Policy limit in dollars")
+    policy_limit: Optional[Money] = Field(None, description="Policy limit in dollars (handles '$1,000,000' format)")
     is_critical: bool = False
     policy_limit_flagged: bool = False
     warnings: List[str] = Field(default_factory=list, description="Warnings about missing or uncertain data")

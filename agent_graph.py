@@ -17,8 +17,17 @@ async def ocr_node(state):
     return {"text_md": text_md}
 
 def router_node(state):
+    """
+    Router node with input truncation to prevent ReDoS attacks.
+    
+    Limits text to first 1000 characters before pattern matching.
+    """
+    from utils_security import truncate_text
+    
+    # Truncate input to prevent ReDoS (even though we use simple 'in' checks)
+    text = truncate_text(state['text_md'], max_length=1000).lower()
+    
     # Simple heuristic or mini-LLM call
-    text = state['text_md'].lower()[:1000]
     if "lease" in text or "tenant" in text: 
         return {"doc_type": "lease"}
     if "estimate" in text or "quote" in text: 
@@ -78,26 +87,31 @@ def extraction_node(state):
     # return {"final_data": data.model_dump(mode='json')}
     
     # Dev: Manual JSON parsing (Ollama doesn't support with_structured_output)
+    # Truncate text to prevent ReDoS and reduce token usage
+    from utils_security import truncate_text, safe_regex_search
+    
+    truncated_text = truncate_text(state['text_md'], max_length=50000)  # Limit to 50k chars
+    
     schema_json = json.dumps(target_schema.model_json_schema(), indent=2)
     prompt = f"""Extract information from the following document text according to this JSON schema:
 
 {schema_json}
 
 Document text:
-{state['text_md']}
+{truncated_text}
 
 Return ONLY valid JSON matching the schema. Do not include any markdown code blocks or extra text, just the JSON object."""
 
     try:
         response = llm.invoke(prompt)
         
-        # Clean response - remove markdown code blocks if present
+        # Clean response - remove markdown code blocks if present (safe regex)
         cleaned_response = re.sub(r'```json\s*', '', response)
         cleaned_response = re.sub(r'```\s*', '', cleaned_response)
         cleaned_response = cleaned_response.strip()
         
-        # Try to find JSON object in response
-        json_match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
+        # Try to find JSON object in response (safe regex with truncation)
+        json_match = safe_regex_search(r'\{.*\}', cleaned_response, max_length=10000)
         if json_match:
             cleaned_response = json_match.group(0)
         

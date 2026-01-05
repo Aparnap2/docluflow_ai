@@ -36,6 +36,7 @@ This Apify Actor implements **Autonomous Intelligence** through Router + Reasoni
   - ✅ Warnings array for missing data
   - ✅ ValidationError handling (partial success)
   - ✅ Increased timeouts for large documents
+  - ✅ **Enterprise Security**: Password-protected PDF detection, filename sanitization, magic bytes verification, ReDoS prevention
 - **Local Development**: Ollama models (ministral-3:3b)
 - **Production Ready**: Structured for DeepInfra migration
 - **n8n Integration**: Outputs actionable JSON for automation workflows
@@ -232,6 +233,7 @@ See [PRD_IMPLEMENTATION.md](PRD_IMPLEMENTATION.md) for detailed documentation on
 - **[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)** - Complete implementation status
 - **[LOAD_TEST_SUMMARY.md](LOAD_TEST_SUMMARY.md)** - Performance metrics and optimization
 - **[CRITICAL_FIXES_APPLIED.md](CRITICAL_FIXES_APPLIED.md)** - Production fixes details
+- **[ENTERPRISE_HARDENING.md](ENTERPRISE_HARDENING.md)** - Enterprise security features
 - **[N8N_INTEGRATION_GUIDE.md](N8N_INTEGRATION_GUIDE.md)** - n8n setup and configuration
 
 ## Troubleshooting
