@@ -202,6 +202,13 @@ sorted_by_true_cost = sorted(quotes, key=lambda q: q.true_cost)
 ```python
 @model_validator(mode='after')
 def check_critical_and_policy_limit(self):
+    # Prevent silent failures - warn if critical fields are missing
+    if self.expiration_date is None:
+        self.warnings.append("Expiration date not found - Manual Review Needed")
+        self.is_critical = True  # Mark as critical if we can't verify expiration
+        return self
+    
+    # PRD: "Check if Expiration < Today + 30. Check Policy Limit > $1M"
     days_left = (self.expiration_date - date.today()).days
     
     # Auto-flag if expiring in < 30 days
@@ -209,18 +216,21 @@ def check_critical_and_policy_limit(self):
         self.is_critical = True
     
     # Check policy limit - flag if below $1M
-    if self.policy_limit is not None:
-        if self.policy_limit < 1_000_000:
-            self.policy_limit_flagged = True
-            self.is_critical = True  # Also mark as critical if policy limit too low
+    if self.policy_limit is None:
+        self.warnings.append("Policy limit not found - Manual Review Needed")
+    elif self.policy_limit < 1_000_000:
+        self.policy_limit_flagged = True
+        self.is_critical = True  # Also mark as critical if policy limit too low
     
     return self
 ```
 
 **What it does:**
+- **Prevents hallucination**: Fields are Optional, missing fields generate warnings
 - Flags COIs expiring within 30 days (urgent renewal needed)
 - Flags COIs with policy limits below $1M (inadequate coverage)
 - Sets `is_critical = True` for either condition
+- Adds warnings for missing critical data (no silent failures)
 - Enables n8n to send Slack alerts: "CRITICAL: Plumber insurance expiring!"
 
 **Example Outputs:**
