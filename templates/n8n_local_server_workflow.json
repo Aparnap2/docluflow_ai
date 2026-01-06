@@ -1,0 +1,292 @@
+{
+  "name": "PropFlow Local Server Integration",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-oauth",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "itemList"
+      },
+      "id": "split-attachments",
+      "name": "Split Attachments",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/pdf",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "filter-pdf",
+      "name": "Filter PDF Only",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:8000/extract",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "doc_base64",
+              "value": "={{ $json.data }}"
+            },
+            {
+              "name": "filename",
+              "value": "={{ $json.filename }}"
+            }
+          ]
+        },
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "options": { "timeout": 300000 }
+      },
+      "id": "propflow-api",
+      "name": "PropFlow API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "propflow-api-key",
+          "name": "PropFlow API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "success",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "check-success",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.doc_type }}",
+              "rightValue": "lease",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "is-lease",
+      "name": "Is Lease?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.doc_type }}",
+              "rightValue": "quote",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "is-quote",
+      "name": "Is Quote?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.doc_type }}",
+              "rightValue": "coi",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "is-coi",
+      "name": "Is COI?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 600]
+    },
+    {
+      "parameters": {
+        "calendarId": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list"
+        },
+        "title": "={{ 'Lease Notice: ' + $json.data.tenant_name }}",
+        "start": {
+          "value": "={{ $json.notice_date }}",
+          "mode": "expression"
+        },
+        "allDay": true,
+        "description": "={{ 'Lease ending: ' + $json.data.end_date + '. Rent: $' + $json.data.rent_amount }}"
+      },
+      "id": "calendar-event",
+      "name": "Google Calendar",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [1300, 150]
+    },
+    {
+      "parameters": {
+        "authentication": "googleSheetsOAuth2",
+        "operation": "append",
+        "sheetId": {
+          "__rl": true,
+          "value": "SHEET_ID",
+          "mode": "id"
+        },
+        "range": "A:F",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Vendor": "={{ $json.data.vendor_name }}",
+            "Total Amount": "={{ $json.data.total_amount }}",
+            "True Cost": "={{ $json.data.true_cost }}",
+            "Hidden Fees": "={{ $json.data.hidden_fees_found ? 'Yes' : 'No' }}",
+            "Date": "={{ new Date().toISOString().split('T')[0] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "airtable-row",
+      "name": "Airtable/Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1300, 350],
+      "credentials": {
+        "googleSheetsOAuth2": {
+          "id": "google-sheets",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "text": "={{ '🚨 COI ALERT: Policy expiring on ' + $json.data.expiration_date + ' for ' + $json.data.insured_name }}"
+      },
+      "id": "slack-alert",
+      "name": "Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1300, 600],
+      "credentials": {
+        "slackApi": {
+          "id": "slack",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "text": "={{ '❌ Error processing ' + $json.filename + ': ' + $json.error }}"
+      },
+      "id": "error-alert",
+      "name": "Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [900, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "slack",
+          "name": "Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [[{ "node": "Split Attachments", "type": "main", "index": 0 }]]
+    },
+    "Split Attachments": {
+      "main": [[{ "node": "Filter PDF Only", "type": "main", "index": 0 }]]
+    },
+    "Filter PDF Only": {
+      "main": [
+        [{ "node": "PropFlow API", "type": "main", "index": 0 }],
+        [{ "node": "PropFlow API", "type": "main", "index": 0 }]
+      ]
+    },
+    "PropFlow API": {
+      "main": [[{ "node": "Check Success", "type": "main", "index": 0 }]]
+    },
+    "Check Success": {
+      "main": [
+        [{ "node": "Is Lease?", "type": "main", "index": 0 }],
+        [{ "node": "Error Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Lease?": {
+      "main": [
+        [{ "node": "Google Calendar", "type": "main", "index": 0 }],
+        [{ "node": "Is Quote?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Quote?": {
+      "main": [
+        [{ "node": "Airtable/Sheets", "type": "main", "index": 0 }],
+        [{ "node": "Is COI?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is COI?": {
+      "main": [
+        [{ "node": "Slack Alert", "type": "main", "index": 0 }],
+        [{ "node": "Error Alert", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
