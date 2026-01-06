@@ -1,58 +1,54 @@
 {
-    "title": "DocuFlow Headless Input Schema",
-    "type": "object",
-    "schemaVersion": 1,
-    "properties": {
-        "source_url": {
-            "title": "Source URL",
-            "type": "string",
-            "description": "Public URL of the PDF, Image, or Website to extract data from.",
-            "editor": "textfield",
-            "pattern": "^https?://.+",
-            "patternErrorMessage": "Please enter a valid HTTP or HTTPS URL"
-        },
-        "target_schema": {
-            "title": "Target JSON Schema",
-            "type": "object",
-            "description": "Define the JSON structure you want extracted. Example: {'total': 'number', 'items': 'array', 'date': 'string'}",
-            "editor": "json",
-            "default": {
-                "title": "string",
-                "summary": "string",
-                "key_points": "array"
-            }
-        },
-        "use_gpu_ocr": {
-            "title": "Use GPU OCR (DeepSeek)",
-            "type": "boolean",
-            "description": "Enable for handwriting, complex scans, or poor quality documents. Costs more but provides better accuracy.",
-            "default": false
-        },
-        "proxy_configuration": {
-            "title": "Proxy Configuration",
-            "type": "object",
-            "description": "Configure proxies to avoid blocking and improve success rates.",
-            "editor": "proxy",
-            "default": {
-                "useApifyProxy": true
-            }
-        },
-        "max_retries": {
-            "title": "Maximum Retries",
-            "type": "integer",
-            "description": "Maximum number of retry attempts for failed operations (1-5).",
-            "minimum": 1,
-            "maximum": 5,
-            "default": 3
-        },
-        "timeout_seconds": {
-            "title": "Timeout (seconds)",
-            "type": "integer",
-            "description": "Maximum time to wait for processing (30-300 seconds).",
-            "minimum": 30,
-            "maximum": 300,
-            "default": 120
+  "title": "Universal Document Extractor Input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "docBinary": {
+      "title": "Document Binary (n8n format)",
+      "type": "object",
+      "description": "n8n binary data wrapper containing base64 encoded document",
+      "properties": {
+        "data": {
+          "title": "Base64 Encoded Document",
+          "type": "string",
+          "description": "Base64 encoded PDF or image file",
+          "editor": "textfield"
         }
+      },
+      "required": ["data"]
     },
-    "required": ["source_url", "target_schema"]
+    "docBase64": {
+      "title": "Document Base64 (alternative)",
+      "type": "string",
+      "description": "Alternative field for direct base64 input",
+      "editor": "textfield"
+    },
+    "base64_data": {
+      "title": "Base64 Data (alternative)",
+      "type": "string",
+      "description": "Alternative field for direct base64 input",
+      "editor": "textfield"
+    },
+    "mimeType": {
+      "title": "MIME Type",
+      "type": "string",
+      "description": "Document MIME type (default: application/pdf)",
+      "editor": "textfield",
+      "default": "application/pdf",
+      "pattern": "^(application/pdf|image/(png|jpeg|jpg|webp))$"
+    },
+    "outputFormat": {
+      "title": "Output Format",
+      "type": "string",
+      "description": "Output format selection",
+      "editor": "select",
+      "default": "json",
+      "enum": ["json", "detailed"]
+    }
+  },
+  "anyOf": [
+    { "required": ["docBinary"] },
+    { "required": ["docBase64"] },
+    { "required": ["base64_data"] }
+  ]
 }

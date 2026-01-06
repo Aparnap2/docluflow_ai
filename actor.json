@@ -1,0 +1,17 @@
+{
+  "actorSpecification": 1,
+  "name": "docuflow-universal-extractor",
+  "title": "DocuFlow Universal Document Extractor",
+  "description": "Extract structured data from property documents (leases, quotes, COIs) using Google Gemini 2.0 Flash. Returns clean JSON for n8n automation workflows.",
+  "version": "2.0.0",
+  "build": {
+    "dockerfile": "./Dockerfile"
+  },
+  "main": "main.py",
+  "environmentVariables": {
+    "GOOGLE_API_KEY": {
+      "description": "Google API key for Gemini 2.0 Flash access",
+      "isSecret": true
+    }
+  }
+}
