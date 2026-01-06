@@ -55,6 +55,36 @@ For async support, you would need to:
 
 ---
 
+## Local Hosting (for n8n in Docker)
+
+If you are running n8n locally via Docker and the PropFlow Agent on your host machine, use the following configuration:
+
+### 1. Start the Local Server
+```bash
+# Install dependencies
+uv pip install fastapi uvicorn
+
+# Start the server
+python server.py
+```
+The server will start on `http://localhost:8000`.
+
+### 2. Connect from n8n Docker
+In your n8n **HTTP Request** node:
+- **URL**: `http://host.docker.internal:8000/extract`
+- **Method**: `POST`
+- **Authentication**: Header `X-API-Key` with value `dev-key-123` (or your env var)
+
+### 3. Body Parameters (JSON)
+```json
+{
+  "source_url": "URL_OR_LOCAL_FILE_PATH",
+  "use_gpu_ocr": false
+}
+```
+
+---
+
 ## n8n Workflow Setup
 
 ### Basic Workflow Structure

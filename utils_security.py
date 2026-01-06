@@ -166,9 +166,10 @@ def validate_document_url(url: str) -> Optional[Dict[str, str]]:
         }
     
     # Check protocol
-    if not url.startswith(('http://', 'https://')):
+    # Allow file:// for local dev
+    if not url.startswith(('http://', 'https://', 'file://')):
         return {
-            "error": "Invalid URL protocol. Only http:// and https:// are allowed",
+            "error": "Invalid URL protocol. Only http://, https://, and file:// are allowed",
             "error_type": "invalid_protocol"
         }
     
@@ -209,14 +210,18 @@ def validate_and_prepare_document(doc_url: str, doc_bytes: bytes, temp_dir: Opti
         "file_size_mb": 0
     }
     
-    # Validate URL
-    url_error = validate_document_url(doc_url)
-    if url_error:
-        result["error"] = url_error
-        return result
+    # Validate URL only if it looks like one
+    if doc_url.startswith(('http://', 'https://', 'file://')):
+        url_error = validate_document_url(doc_url)
+        if url_error:
+            result["error"] = url_error
+            return result
     
-    # Sanitize filename from URL
-    filename = os.path.basename(doc_url.split('?')[0])  # Remove query params
+    # Sanitize filename from URL or hint
+    if '://' in doc_url:
+        filename = os.path.basename(doc_url.split('?')[0])
+    else:
+        filename = doc_url
     sanitized_filename = sanitize_filename(filename)
     if not sanitized_filename.endswith('.pdf'):
         sanitized_filename += '.pdf'

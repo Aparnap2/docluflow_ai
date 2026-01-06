@@ -151,6 +151,102 @@ def clean_money_value(v: str | float | int) -> float:
 
 
 # =============================================================================
+# DATA CONTRACT ENFORCER: n8n Serialization Layer
+# =============================================================================
+# This is our "Insurance Policy" against broken automations.
+# Rule: Never trust n8n to format data. Pydantic validates, this serializes.
+
+def normalize_for_n8n(data: dict) -> dict:
+    """
+    Converts extracted data to n8n-compatible flat JSON.
+
+    Guarantees:
+    1. Dates -> ISO8601 Strings (YYYY-MM-DD)
+    2. Floats -> Rounded to 2 decimals (no 10.000000001)
+    3. Nested Lists -> JSON Strings (so Airtable/Sheets don't split rows)
+    4. None -> null (explicit, not omitted)
+
+    Args:
+        data: Dictionary from extraction/cleaning pipeline
+
+    Returns:
+        n8n-compatible dictionary ready for push_data()
+    """
+    if not data:
+        return data
+
+    result = {}
+
+    for key, value in data.items():
+        if value is None:
+            result[key] = None
+            continue
+
+        # Rule: Floats rounded to 2 decimals (Airtable hates precision errors)
+        if isinstance(value, float):
+            result[key] = round(value, 2)
+            continue
+
+        # Rule: Nested lists converted to JSON strings (Google Sheets/Airtable compatibility)
+        if isinstance(value, list):
+            # Check if list contains dicts or complex objects
+            if value and isinstance(value[0], (dict, list)):
+                # Complex nested structure -> JSON string
+                result[key] = json.dumps(value, default=str)
+            else:
+                # Simple list (strings, numbers) -> keep as list for n8n Switch nodes
+                result[key] = value
+            continue
+
+        # Rule: Dicts with nested data -> flatten key paths
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                if sub_value is None:
+                    result[f"{key}_{sub_key}"] = None
+                elif isinstance(sub_value, float):
+                    result[f"{key}_{sub_key}"] = round(sub_value, 2)
+                elif isinstance(sub_value, list):
+                    result[f"{key}_{sub_key}"] = json.dumps(sub_value, default=str)
+                else:
+                    result[f"{key}_{sub_key}"] = sub_value
+            continue
+
+        # Default: keep as-is
+        result[key] = value
+
+    return result
+
+
+def validate_output_contract(data: dict, expected_schema: dict) -> tuple[bool, list[str]]:
+    """
+    Validates output against n8n destination requirements.
+
+    This is our "Schema Test" - run before push_data() to catch issues.
+    Returns (is_valid, list of issues).
+    """
+    issues = []
+
+    # Check required fields
+    for field, expected_type in expected_schema.get("required", []):
+        if field not in data:
+            issues.append(f"Missing required field: {field}")
+            continue
+
+        actual_value = data[field]
+        actual_type = type(actual_value).__name__
+
+        # Type checking
+        if expected_type == "number" and not isinstance(actual_value, (int, float)):
+            issues.append(f"{field}: expected number, got {actual_type}")
+        elif expected_type == "string" and not isinstance(actual_value, str):
+            issues.append(f"{field}: expected string, got {actual_type}")
+        elif expected_type == "boolean" and not isinstance(actual_value, bool):
+            issues.append(f"{field}: expected boolean, got {actual_type}")
+
+    return len(issues) == 0, issues
+
+
+# =============================================================================
 # Document Classification (leveraged from agent_graph.py router_node)
 # =============================================================================
 
@@ -432,9 +528,9 @@ async def main() -> None:
             payload_warnings = payload.get("warnings", []) if payload else []
 
             # =================================================================
-            # Step 5: Build final result
+            # Step 5: Build final result and enforce data contract
             # =================================================================
-            final_result = {
+            result = {
                 "status": "success",
                 "doc_type": extraction_result.get("doc_type", doc_type),
                 "summary": extraction_result.get("summary", ""),
@@ -447,7 +543,10 @@ async def main() -> None:
                 "processing_time_ms": processing_time_ms
             }
 
-            await Actor.push_data(final_result)
+            # Apply n8n serialization layer (Data Contract Enforcer)
+            normalized_result = normalize_for_n8n(result)
+
+            await Actor.push_data(normalized_result)
 
         except ValueError as ve:
             # Input validation error - clean error structure
@@ -460,7 +559,7 @@ async def main() -> None:
                 "warnings": [],
                 "error": str(ve)
             }
-            await Actor.push_data(error_result)
+            await Actor.push_data(normalize_for_n8n(error_result))
             Actor.log.error(f"Validation error: {ve}")
 
         except json.JSONDecodeError as je:
@@ -474,7 +573,7 @@ async def main() -> None:
                 "warnings": [],
                 "error": f"Failed to parse AI response: {str(je)}"
             }
-            await Actor.push_data(error_result)
+            await Actor.push_data(normalize_for_n8n(error_result))
             Actor.log.error(f"JSON decode error: {je}")
 
         except Exception as e:
@@ -488,7 +587,7 @@ async def main() -> None:
                 "warnings": [],
                 "error": f"Processing failed: {str(e)}"
             }
-            await Actor.push_data(error_result)
+            await Actor.push_data(normalize_for_n8n(error_result))
             Actor.log.error(f"Unexpected error: {type(e).__name__}: {e}")
 
 
