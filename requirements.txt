@@ -1,18 +1,32 @@
 # Core dependencies for Universal Document Extractor Apify Actor
 # Uses Google Gemini 2.0 Flash for vision and extraction (no OCR libraries)
 
-# Apify SDK
-apify==2.7.1
+# Apify SDK (v1.7.0+ for crawlee compatibility)
+apify>=1.7.0
 
 # Google GenAI (Gemini 2.0 Flash)
-google-genai==1.0.0
+google-genai>=1.0.0
 
 # Pydantic v2 for schema validation and business logic
-pydantic>=2.8.0
+pydantic>=2.5.0
 
-# HTTP client (used by Apify SDK)
-httpx==0.27.0
+# HTTP client (used by Apify SDK and webhook callbacks)
+httpx>=0.27.0
+
+# Data processing for Module C (Janitor)
+pandas>=2.1.0
+openpyxl>=3.1.0  # Excel file support
+
+# Fuzzy matching for deduplication
+rapidfuzz>=3.0.0
+
+# File type detection (Apify uses this internally)
+python-magic>=0.4.27
 
 # Development and testing
 pytest==8.3.3
 pytest-asyncio==0.23.7
+
+# Local dev server for n8n integration
+uvicorn>=0.27.0
+fastapi>=0.109.0
