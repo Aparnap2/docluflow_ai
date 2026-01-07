@@ -1,0 +1,287 @@
+{
+  "name": "EntryAI_Local_Production",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Start",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [180, 240]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "test-entry-ai",
+        "options": {}
+      },
+      "name": "Test_Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [180, 440],
+      "notes": "Trigger via Python Script"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [{"mode": "everyMinute"}]
+        },
+        "filters": {"label": "invoices"},
+        "options": {"downloadAttachments": true}
+      },
+      "name": "Gmail_Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [180, 640],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_ID",
+          "name": "Gmail Account"
+        }
+      },
+      "notes": "Real Email Trigger"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/process",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($binary.data) }}",
+        "options": {"timeout": 300000, "allowUnauthorizedCerts": false}
+      },
+      "name": "Local_Python_Engine",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3.2,
+      "position": [560, 540],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "notes": "Points to your local main_local.py (FastAPI). Timeout: 5m."
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.doc_type }}",
+        "rules": {
+          "rules": [
+            {"value2": "invoice", "output": 0},
+            {"value2": "coi", "output": 1},
+            {"value2": "lease", "output": 2},
+            {"value2": "quote", "output": 3}
+          ]
+        },
+        "fallbackOutput": 4
+      },
+      "name": "Router_Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [820, 540]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "baseId": "appYOURBASEID",
+        "table": "Invoices",
+        "options": {}
+      },
+      "name": "Airtable_Invoice",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1100, 340],
+      "credentials": {
+        "airtableApi": {
+          "id": "YOUR_AIRTABLE_ID",
+          "name": "Airtable Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": {"mode": "list", "value": "primary"},
+        "start": "={{ $json.payload.expiration_date }}",
+        "end": "={{ $json.payload.expiration_date }}",
+        "additionalFields": {
+          "summary": "COI Expiration - {{ $json.payload.insured_name }}",
+          "description": "Policy: {{ $json.payload.policy_number }}\nLimit: {{ $json.payload.policy_limit }}"
+        }
+      },
+      "name": "Google_Calendar_COI",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [1100, 490],
+      "credentials": {
+        "googleCalendarOAuth2": {
+          "id": "YOUR_GCAL_ID",
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "baseId": "appYOURBASEID",
+        "table": "Leases",
+        "options": {}
+      },
+      "name": "Airtable_Lease",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1100, 640],
+      "credentials": {
+        "airtableApi": {
+          "id": "YOUR_AIRTABLE_ID",
+          "name": "Airtable Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "baseId": "appYOURBASEID",
+        "table": "Quotes",
+        "options": {}
+      },
+      "name": "Airtable_Quote",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1100, 790],
+      "credentials": {
+        "airtableApi": {
+          "id": "YOUR_AIRTABLE_ID",
+          "name": "Airtable Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "operations-alerts",
+        "text": "⚠️ **Unknown Document Received**\n\nDoc Type: {{ $json.doc_type }}\n\nPlease review the file manually.",
+        "attachments": [],
+        "otherOptions": {}
+      },
+      "name": "Slack_Alert_Review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1100, 940],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_ID",
+          "name": "Slack App"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "system-errors",
+        "text": "❌ **Workflow Error**\n\nError Message: {{ $execution.error.message }}\nNode: {{ $execution.error.node }}",
+        "attachments": [],
+        "otherOptions": {}
+      },
+      "name": "Slack_Error_Catch",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [480, 860],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_ID",
+          "name": "Slack App"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "name": "Error_Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [260, 860]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "name": "Merge_Inputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [400, 540],
+      "notes": "Standardizes Email vs Webhook Input"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.is_urgent }}",
+              "operation": "equal",
+              "value2": "true"
+            }
+          ]
+        }
+      },
+      "name": "Urgent_Filter",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [940, 340],
+      "notes": "Flag urgent COIs for immediate attention"
+    },
+    {
+      "parameters": {
+        "channel": "urgent-alerts",
+        "text": "🚨 **URGENT: COI Expiring Soon**\n\nInsured: {{ $json.payload.insured_name }}\nExpires: {{ $json.payload.expiration_date }}\nDays Left: {{ $json.payload.days_until_expiry }}",
+        "attachments": [],
+        "otherOptions": {}
+      },
+      "name": "Slack_Urgent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1300, 490],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_ID",
+          "name": "Slack App"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Test_Webhook": {
+      "main": [[{"node": "Merge_Inputs", "type": "main", "index": 0}]]
+    },
+    "Gmail_Trigger": {
+      "main": [[{"node": "Merge_Inputs", "type": "main", "index": 1}]]
+    },
+    "Merge_Inputs": {
+      "main": [[{"node": "Local_Python_Engine", "type": "main", "index": 0}]]
+    },
+    "Local_Python_Engine": {
+      "main": [[{"node": "Router_Switch", "type": "main", "index": 0}]]
+    },
+    "Router_Switch": {
+      "main": [
+        [{"node": "Urgent_Filter", "type": "main", "index": 0}],
+        [{"node": "Google_Calendar_COI", "type": "main", "index": 0}],
+        [{"node": "Airtable_Lease", "type": "main", "index": 0}],
+        [{"node": "Airtable_Quote", "type": "main", "index": 0}],
+        [{"node": "Slack_Alert_Review", "type": "main", "index": 0}]
+      ]
+    },
+    "Urgent_Filter": {
+      "main": [
+        [{"node": "Slack_Urgent", "type": "main", "index": 0}],
+        [{"node": "Airtable_Invoice", "type": "main", "index": 0}]
+      ]
+    },
+    "Error_Trigger": {
+      "main": [[{"node": "Slack_Error_Catch", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

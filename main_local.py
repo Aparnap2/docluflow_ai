@@ -340,7 +340,7 @@ async def health_check() -> dict[str, str]:
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
+async def root():
     """Root endpoint with usage info."""
     return {
         "service": "EntryAI Local Server",
@@ -362,8 +362,49 @@ async def root() -> dict[str, str]:
 
 
 # =============================================================================
-# Main Extraction Endpoint
+# Main Extraction Endpoints
 # =============================================================================
+
+async def handle_extraction(request: Request) -> dict[str, Any]:
+    """Shared extraction logic for all endpoints."""
+    body = await request.json()
+    print(f"📥 Received request from n8n")
+
+    # Handle both direct base64 and JSON-stringified base64 (n8n binary)
+    raw_data = body.get("data")
+    if isinstance(raw_data, str):
+        # Already a string, use as-is
+        file_b64 = raw_data
+    else:
+        raise HTTPException(status_code=400, detail="Invalid data format")
+
+    if not file_b64:
+        raise HTTPException(status_code=400, detail="Missing 'data' field")
+
+    # Validate base64
+    try:
+        file_bytes = base64.b64decode(file_b64)
+        print(f"   Decoded {len(file_bytes)} bytes")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
+
+    # Build ActorInput
+    task_type = body.get("task_type", "extract_invoice")
+    actor_input = ActorInput(
+        task_type=task_type,
+        doc_binary=DocumentBinaryInput(data=file_b64),
+    )
+
+    # Run extraction
+    print(f"   Processing {task_type}...")
+    result = await process_extraction_task(actor_input)
+
+    # Return n8n-compatible output
+    output = normalize_for_n8n(result)
+    print(f"   ✅ {result.doc_type}: {result.summary[:50]}...")
+
+    return output
+
 
 @app.post("/run-sync")
 async def local_extraction_endpoint(request: Request) -> dict[str, Any]:
@@ -385,42 +426,53 @@ async def local_extraction_endpoint(request: Request) -> dict[str, Any]:
     }
     """
     try:
-        body = await request.json()
-        print(f"📥 Received request from n8n")
-
-        # Extract base64 data
-        file_b64 = body.get("data")
-        if not file_b64:
-            raise HTTPException(status_code=400, detail="Missing 'data' field")
-
-        # Validate base64
-        try:
-            file_bytes = base64.b64decode(file_b64)
-            print(f"   Decoded {len(file_bytes)} bytes")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64: {e}")
-
-        # Build ActorInput
-        task_type = body.get("task_type", "extract_invoice")
-        actor_input = ActorInput(
-            task_type=task_type,
-            doc_binary=DocumentBinaryInput(data=file_b64),
-        )
-
-        # Run extraction
-        print(f"   Processing {task_type}...")
-        result = await process_extraction_task(actor_input)
-
-        # Return n8n-compatible output
-        output = normalize_for_n8n(result)
-        print(f"   ✅ {result.doc_type}: {result.summary[:50]}...")
-
-        return output
-
+        return await handle_extraction(request)
     except HTTPException:
         raise
     except Exception as e:
         print(f"   ❌ Error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "doc_type": "unknown",
+                "summary": str(e),
+                "payload": None,
+                "error": str(e),
+            },
+        )
+
+
+@app.post("/process")
+async def process_endpoint(request: Request) -> dict[str, Any]:
+    """
+    n8n workflow endpoint (matches /process in workflow JSON).
+
+    Same as /run-sync but specifically for the n8n workflow template.
+    Accepts binary data in various formats from n8n HTTP Request node.
+    """
+    try:
+        body = await request.json()
+
+        # Handle n8n binary data format
+        # n8n may send: {"data": "base64..."} or binary attachment
+        if "data" not in body:
+            # Try to find base64 in any field
+            for key, value in body.items():
+                if isinstance(value, str) and len(value) > 20:
+                    try:
+                        base64.b64decode(value)
+                        body["data"] = value
+                        break
+                    except Exception:
+                        continue
+
+        return await handle_extraction(request)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"   ❌ Error in /process: {e}")
         return JSONResponse(
             status_code=500,
             content={
