@@ -1,70 +1,94 @@
-# PropFlow Agent - AI Document Extraction for Property Managers
+# EntryAI Platform - Intelligent Document Extraction
 
-**Turn unstructured property PDFs into autonomous actions** - Calendar events, Spreadsheet rows, Slack alerts.
+**AI-powered document processing platform** that transforms unstructured PDFs into clean, actionable data. Uses Google Gemini 2.0 Flash for vision-based extraction with n8n workflow automation.
 
 ## Architecture
 
-**Philosophy:** "Local OCR + Ollama = Private, Fast, Free"
-
 ```
-Gmail → n8n → Local Server (FastAPI) → DeepSeek OCR → Router → Ministral → n8n Actions
-                                                    ↓
-                              ┌─────────────────────┴─────────────────────┐
-                              ↓                     ↓                     ↓
-                        Google Calendar       Google Sheets/Airtable       Slack
+Email/File → n8n → Local Server / Apify → Gemini 2.0 Flash → Router → Actions
+                                                          ↓
+                              ┌────────────────────────────┴────────────────────────────┐
+                              ↓                      ↓                      ↓           ↓
+                        Invoices               Certificates            Leases        Quotes
+                        (Airtable)            (Calendar+Slack)        (Airtable)    (Airtable)
 ```
 
-### Tech Stack
-- **OCR**: DeepSeek OCR (Ollama) with Docling fallback
-- **Extraction**: Ministral-3B (Ollama)
-- **Routing**: Keyword-based (fast, deterministic)
-- **Server**: FastAPI for n8n integration
-- **Validation**: Pydantic with business logic
+## Tech Stack
+
+- **Extraction**: Google Gemini 2.0 Flash (Multimodal vision)
+- **Validation**: Pydantic v2 with business logic
+- **Automation**: n8n workflow orchestration
+- **Local Dev**: FastAPI server (bypasses Apify Cloud)
+- **Data Processing**: Pandas for CRM cleaning
 
 ## Quick Start
 
-### 1. Start Ollama Models
+### 1. Set API Key
+
 ```bash
-docker exec ollama ollama pull deepseek-ocr:3b
-docker exec ollama ollama pull ministral-3:3b
+# Create .env file
+echo "GOOGLE_API_KEY=your_key_here" > .env
 ```
 
-### 2. Start Local Server
+### 2. Development Mode (Local Server)
+
 ```bash
-source .venv/bin/activate
-python server.py
-# Server runs at http://localhost:8000
+# Start local server (no Apify/Gemini API needed for testing)
+python main_local.py
+
+# Server runs at http://127.0.0.1:8000
+# Endpoints:
+#   POST /run-sync    - Main extraction endpoint
+#   POST /process     - n8n workflow endpoint
+#   GET  /health      - Health check
 ```
 
-### 3. n8n Integration
-Import `templates/n8n_local_server_workflow.json` to n8n.
+### 3. Production Mode (Apify)
 
-**n8n Flow:**
-1. Gmail Trigger → Filter PDF
-2. HTTP Request → `POST http://localhost:8000/extract`
-3. Switch on `{{ $json.doc_type }}`:
-   - `lease` → Google Calendar
-   - `quote` → Google Sheets/Airtable
-   - `coi` → Slack (if `is_critical`)
+```bash
+# Push to Apify
+apify push
 
-## n8n Output Format
+# Or run locally via Apify CLI
+apify run
+```
+
+## n8n Integration
+
+### Local Development
+
+Import `templates/n8n_workflow_local.json` to n8n.
+
+**Workflow Flow:**
+1. Gmail Trigger or Webhook → Merge Inputs
+2. HTTP Request → `POST http://127.0.0.1:8000/process`
+3. Router Switch on `{{ $json.doc_type }}`:
+   - `invoice` → Airtable (Invoices table)
+   - `coi` → Google Calendar + Slack (urgent alerts)
+   - `lease` → Airtable (Leases table)
+   - `quote` → Airtable (Quotes table)
+   - `unknown` → Slack review alert
+
+### Production (Apify)
+
+Update n8n HTTP Request URL to your Apify Actor endpoint.
+
+## API Response Format
 
 ### Success Response
 ```json
 {
   "status": "success",
-  "doc_type": "lease",
-  "filename": "lease.pdf",
-  "data": {
-    "doc_type": "lease",
-    "tenant_name": "Jane Doe",
-    "end_date": "2025-05-31",
-    "calculated_notice_date": "2025-04-01",
-    "rent_cap_flagged": true,
-    "warnings": ["Rent cap percentage not found"]
+  "doc_type": "invoice",
+  "summary": "Invoice extracted successfully",
+  "payload": {
+    "invoice_number": "INV-2024-001",
+    "vendor_name": "Acme Corp",
+    "total_amount": 1500.00,
+    "invoice_date": "2024-01-15"
   },
-  "is_critical": false,
-  "notice_date": "2025-04-01"
+  "is_urgent": false,
+  "warnings": []
 }
 ```
 
@@ -73,66 +97,88 @@ Import `templates/n8n_local_server_workflow.json` to n8n.
 {
   "status": "success",
   "doc_type": "coi",
-  "data": {
-    "doc_type": "coi",
-    "expiration_date": "2025-02-15",
+  "payload": {
     "insured_name": "ABC Corp",
-    "is_critical": true
+    "expiration_date": "2025-02-15",
+    "days_until_expiry": 30,
+    "is_urgent": true
   },
-  "is_critical": true  // Route to Slack
+  "is_urgent": true
 }
 ```
+
+## Document Types
+
+| Type | Key Fields | n8n Action |
+|------|------------|------------|
+| **Invoice** | invoice_number, vendor_name, total_amount, due_date | Airtable |
+| **COI** | insured_name, expiration_date, policy_limit, days_until_expiry | Calendar + Slack |
+| **Lease** | tenant_name, monthly_rent, end_date, notice_period_days | Airtable |
+| **Quote** | vendor_name, total_amount, true_cost, line_items | Airtable |
 
 ## Testing
 
 ```bash
-# Test router logic (fast)
-python test_chunk1_router.py
+# Run all tests
+uv run pytest
 
-# Test n8n response format (fast)
-python test_chunk2_server.py
+# Run specific test file
+uv run pytest tests/test_main_local.py -v
 
-# Test extraction with sample text (fast)
-python test_extraction_direct.py
-
-# Full pipeline with real PDFs (slow - DeepSeek OCR)
-python test_real_pdfs.py
+# Run golden dataset benchmark
+python run_benchmark.py --ci
 ```
 
 ## Test Results
 
-| Test | Status |
-|------|--------|
-| Router Logic | ✓ COI/Lease/Quote detection |
-| n8n Format | ✓ Correct Switch node routing |
-| Extraction | ✓ JSON output validated |
+| Suite | Status |
+|-------|--------|
+| Unit Tests | 155 passed, 6 skipped |
+| Local Server | 28 passed |
+| Golden Dataset | Ready (add PDFs to tests/golden_dataset/) |
 
-## Document Types
+## Project Structure
 
-| Type | Fields | n8n Action |
-|------|--------|------------|
-| **Lease** | tenant_name, end_date, notice_date | Google Calendar |
-| **Quote** | vendor_name, total_amount, true_cost | Google Sheets |
-| **COI** | insured_name, expiration_date, is_critical | Slack Alert |
+```
+├── main.py                    # Apify Actor (production)
+├── main_local.py              # Local dev server (FastAPI)
+├── schemas.py                 # Pydantic validation
+├── run_benchmark.py           # Golden dataset regression tests
+├── tests/
+│   ├── test_main_local.py     # Local server tests
+│   ├── test_entryai_router.py # Router tests
+│   ├── test_invoice_extraction.py
+│   ├── test_crm_cleaning.py
+│   └── golden_dataset/        # Test documents
+├── templates/
+│   └── n8n_workflow_local.json  # n8n import
+└── .env                       # API keys
+```
 
 ## Environment Variables
 
 ```bash
-export DOCUFLOW_API_KEY="dev-key-123"  # Optional API key
-export PORT=8000                       # Server port
+GOOGLE_API_KEY=AIza...  # Required for main.py (Gemini API)
 ```
 
-## Files
+## Development
 
+### Adding New Document Types
+
+1. Add schema to `schemas.py` (e.g., `class NewDocData(BaseModel)`)
+2. Add extraction function to `main.py` (e.g., `extract_newdoc()`)
+3. Add route in `router()` function
+4. Update `CRITICAL_FIELDS` in `run_benchmark.py`
+5. Add test case to `tests/golden_dataset/`
+
+### Running Tests with Real PDFs
+
+```bash
+# Add PDFs to tests/golden_dataset/inputs/
+# Add expected JSON to tests/golden_dataset/expected_outputs/
+python run_benchmark.py -v
 ```
-├── server.py                    # FastAPI server for n8n
-├── agent_graph.py              # LangGraph workflow
-├── utils_ocr.py                # OCR (DeepSeek + Docling)
-├── schemas.py                  # Pydantic schemas
-├── templates/
-│   ├── n8n_local_server_workflow.json  # n8n import
-│   ├── lease contract.pdf
-│   ├── bid.pdf
-│   └── COI.pdf
-└── test_*.py                   # Test scripts
-```
+
+## License
+
+MIT
